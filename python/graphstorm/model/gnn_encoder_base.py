@@ -16,12 +16,14 @@
     Relational GNN
 """
 import tqdm
+import time
 
 import dgl
 import torch as th
 from torch import nn
 from dgl.distributed import DistTensor, node_split
 from .gs_layer import GSLayer
+from ..utils import get_rank
 
 class GraphConvEncoder(GSLayer):     # pylint: disable=abstract-method
     r"""General encoder for graph data.
@@ -125,6 +127,8 @@ def dist_inference(g, gnn_encoder, get_input_embeds, batch_size, fanout,
                                                             shuffle=False,
                                                             drop_last=False)
 
+            iter_start = time.time()
+            get_emb_total = 0
             for iter_l, (input_nodes, output_nodes, blocks) in enumerate(tqdm.tqdm(dataloader)):
                 if task_tracker is not None:
                     task_tracker.keep_alive(report_step=iter_l)
@@ -140,7 +144,9 @@ def dist_inference(g, gnn_encoder, get_input_embeds, batch_size, fanout,
                     output_nodes = {g.ntypes[0]: output_nodes}
 
                 if i == 0:
+                    get_emb_start = time.time()
                     h = get_input_embeds(input_nodes)
+                    get_emb_total += (time.time() - get_emb_start)
                 else:
                     h = {k: x[k][input_nodes[k]].to(device) for k in input_nodes.keys()}
                 h = layer(block, h)
@@ -150,6 +156,8 @@ def dist_inference(g, gnn_encoder, get_input_embeds, batch_size, fanout,
                     # that have empty tensors
                     if k in output_nodes:
                         y[k][output_nodes[k]] = h[k].cpu()
+            iter_end = time.time()
+            print(f"[Dist Inference][{get_rank()}], Total Time [{iter_end-iter_start}], Input Emb Time {get_emb_total}")
 
             x = y
             th.distributed.barrier()
