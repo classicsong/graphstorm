@@ -156,9 +156,9 @@ def dist_inference(g, gnn_encoder, get_input_embeds, batch_size, fanout,
                     # that have empty tensors
                     if k in output_nodes:
                         y[k][output_nodes[k]] = h[k].cpu()
-            iter_end = time.time()
-            print(f"[Dist Inference][{get_rank()}], Total Time [{iter_end-iter_start}], Input Emb Time {get_emb_total}")
 
             x = y
             th.distributed.barrier()
+            iter_end = time.time()
+            print(f"[Dist Inference][{get_rank()}], Total Time [{iter_end-iter_start}], Input Emb Time {get_emb_total}")
     return y
