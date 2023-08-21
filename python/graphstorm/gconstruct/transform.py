@@ -1202,7 +1202,8 @@ class ClassificationProcessor(LabelProcessor):
         res[self.label_name] = np.int32(label)
 
         if self._stats_type is not None:
-            if self._stats_type == LABEL_STATS_FREQUENCY_COUNT:
+            if self._stats_type == LABEL_STATS_FREQUENCY_COUNT \
+                and 'train_mask' in res:
                 # get train labels
                 train_labels = res[self.label_name][ \
                     res['train_mask'].astype(np.bool_)]

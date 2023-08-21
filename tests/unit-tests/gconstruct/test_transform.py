@@ -447,6 +447,21 @@ def test_classification_processor():
     assert_equal(ret[stats_info_key][1], vals)
     assert_equal(ret[stats_info_key][2], counts)
 
+    clp = ClassificationProcessor("test_label", "test", [0, 0, 0], LABEL_STATS_FREQUENCY_COUNT)
+
+    # there is no label
+    input_data = {
+        "test_label": np.random.randint(0, 5, (24,))
+    }
+    ret = clp(input_data)
+    stats_info_key = LABEL_STATS_FIELD+"test"
+    assert "test" in ret
+    assert "train_mask" not in ret
+    assert "val_mask" not in ret
+    assert "test_mask" not in ret
+    assert stats_info_key not in ret
+
+
 if __name__ == '__main__':
     test_categorize_transform()
     test_get_output_dtype()
