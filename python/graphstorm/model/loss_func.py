@@ -106,12 +106,22 @@ class RegressionLossFunc(GSLayer):
 
 class LinkPredictLossFunc(GSLayer):
     """ Loss function for link prediction.
+
+        Parameters
+        ----------
+        temperature: float
+            Temperature of the softmax.
     """
+    def __init__(self, temperature=None):
+        super().__init__()
+        self._temperature = temperature
 
     def forward(self, pos_score, neg_score):
         """ The forward function.
         """
         score = th.cat([pos_score, neg_score])
+        if self._temperature is not None:
+            score = score / self._temperature
         label = th.cat([th.ones_like(pos_score), th.zeros_like(neg_score)])
         return F.binary_cross_entropy_with_logits(score, label)
 

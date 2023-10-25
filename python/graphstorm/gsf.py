@@ -492,7 +492,8 @@ def create_builtin_lp_model(g, config, train_task):
         raise Exception(f"Unknow link prediction decoder type {config.lp_decoder_type}")
     model.set_decoder(decoder)
     if config.lp_edge_weight_for_loss is None:
-        model.set_loss_func(LinkPredictLossFunc())
+        temperature = config.lp_loss_temperature
+        model.set_loss_func(LinkPredictLossFunc(temperature))
     else:
         model.set_loss_func(WeightedLinkPredictLossFunc())
     if train_task:

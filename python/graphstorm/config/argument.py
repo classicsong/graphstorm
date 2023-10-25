@@ -1749,6 +1749,18 @@ class GSConfig:
         return BUILTIN_LP_DISTMULT_DECODER
 
     @property
+    def lp_loss_temperature(self):
+        """ Temperature of the softmax for LinkPredictLossFunc
+        """
+        # pylint: disable=no-member
+        if hasattr(self, "_lp_loss_temperature"):
+            assert self._lp_loss_temperature > 0, \
+                "Link prediction loss temperature must > 0, but get {self._lp_loss_temperature}"
+
+            return self._lp_loss_temperature
+        return None
+
+    @property
     def lp_edge_weight_for_loss(self):
         """ The edge data fields that stores the edge weights used
             in computing link prediction loss
@@ -2372,6 +2384,12 @@ def _add_link_prediction_args(parser):
             type=float,
             default=argparse.SUPPRESS,
             help="Used in DistMult score func"
+    )
+    group.add_argument(
+            "--lp-loss-temperature",
+            type=float,
+            default=argparse.SUPPRESS,
+            help="Temperature of the softmax."
     )
     group.add_argument("--lp-edge-weight-for-loss", nargs='+', type=str, default=argparse.SUPPRESS,
             help="Edge feature field name for edge weights. It can be in following format: "
