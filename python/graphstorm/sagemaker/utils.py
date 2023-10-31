@@ -267,23 +267,8 @@ def download_graph(graph_data_s3, graph_name, part_id, local_path, sagemaker_ses
                 # Something else has gone wrong.
                 raise err
 
-    S3Downloader.download(os.path.join(graph_data_s3, graph_config),
+    S3Downloader.download(graph_data_s3,
             graph_path, sagemaker_session=sagemaker_session)
-    try:
-        S3Downloader.download(os.path.join(graph_data_s3, graph_part),
-            graph_part_path, sagemaker_session=sagemaker_session)
-    except Exception: # pylint: disable=broad-except
-        print(f"Can not download graph_data from {graph_data_s3}.")
-        raise RuntimeError(f"Can not download graph_data from {graph_data_s3}.")
-
-    node_id_mapping = "node_mapping.pt"
-
-    # Try to download node id mapping file if any
-    try:
-        S3Downloader.download(os.path.join(graph_data_s3, node_id_mapping),
-            graph_path, sagemaker_session=sagemaker_session)
-    except Exception: # pylint: disable=broad-except
-        print("node id mapping file does not exist")
 
     print(f"Finish download graph data from {graph_data_s3}")
     return os.path.join(graph_path, graph_config)
