@@ -14,10 +14,16 @@
     limitations under the License.
 
 """
+import os
+from dataclasses import dataclass
+from typing import Optional, Union, List, Tuple
+
+from dotenv import load_dotenv, find_dotenv
+
 import torch
 import torch.nn as nn
-import os
 import torch.nn.functional as F
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers import (
     AutoModel,
     AutoConfig,
@@ -30,9 +36,12 @@ from transformers.modeling_utils import PreTrainedModel
 from .hierarchical_compressor import HierarchicalCompressorModel
 from .auto_compressor import AutoCompressorModel
 
+@dataclass
+class NodeClassificationOutput(SequenceClassifierOutput):
+    scores: Optional[List[torch.Tensor]] = None
+
 def load_hf_tokenizer(model_args, model_path):
     if model_args.use_auth_token:
-        from dotenv import load_dotenv, find_dotenv
         _ = load_dotenv(find_dotenv()) # read local .env file
         token = os.environ["HUGGINGFACE_TOKEN"]
 
@@ -50,7 +59,6 @@ def load_hf_model(model_path, compress_mode, num_labels, model_args):
     tokenizer = load_hf_tokenizer(model_args, model_path)
 
     if model_args.use_auth_token:
-        from dotenv import load_dotenv, find_dotenv
         _ = load_dotenv(find_dotenv()) # read local .env file
         token = os.environ["HUGGINGFACE_TOKEN"]
     config = AutoConfig.from_pretrained(model_path,
@@ -107,34 +115,26 @@ def mean_pooling(token_embeddings, attention_mask):
     return torch.sum(token_embeddings * input_mask_expanded, 1) / \
         torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
-class HLCNodeModel():
-
 class LMForGraphTask(PreTrainedModel):
     """ language model for graph task
     """
-    def __init__(self, config, encoder, text):
+    def __init__(self, config, encoder):
         super().__init__(config)
         self.encoder = encoder # LM encoder for text encoding
-        self.text = text
 
         # Initialize weights and apply final processing
         self.post_init()
 
     def encode(self,
-               predict_nids: torch.LongTensor = None,
+               batches,
                return_transformer_outputs: bool = False):
 
         device = self.device
 
-        inputs = self.text[predict_nids]
-        input_ids = inputs['input_ids'].to(device)
-        attention_mask = inputs['attention_mask'].to(device)
-        if self.config.hc:
-            transformer_outputs = self.encoder(predict_nids)
-            # TODO: add attention mask to transformer_outputs
-        else:
-            transformer_outputs = self.encoder(input_ids, attention_mask, output_hidden_states=True)
+        transformer_outputs = self.encoder(batches, output_hidden_states=True)
         token_embeddings = transformer_outputs.last_hidden_state
+        attention_mask = transformer_outputs.attention_mask
+        sequence_lengths = transformer_outputs.sequence_lengths
 
         # Pooling
         if self.config.pooling_strategy == 'mean':
@@ -146,10 +146,9 @@ class LMForGraphTask(PreTrainedModel):
             if self.config.pad_token_id is None or self.config.padding_side == 'left':
                 sequence_lengths = -1
             else:
-                sequence_lengths = (
-                    torch.ne(input_ids, self.config.pad_token_id).sum(-1) - 1).to(device)
+                sequence_lengths = sequence_lengths
             pooled_embeddings = token_embeddings[
-                torch.arange(predict_nids.shape[0], device=device), sequence_lengths]
+                torch.arange(attention_mask.shape[0], device=device), sequence_lengths]
 
         if return_transformer_outputs:
             return pooled_embeddings, transformer_outputs
@@ -174,12 +173,44 @@ class LMForGraphNodeTask(LMForGraphTask):
     def __init__(self, config, encoder, text):
         super().__init__(config, encoder, text)
 
+        self.num_labels = config.num_labels
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels, bias=False)
         # Initialize weights and apply final processing
         self.post_init()
 
-    def forward(self, predict_nids, return_dict=None):
+    def forward(self, predict_nids, labels, return_dict=None):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         embeddings, transformer_outputs = \
             self.encode(predict_nids, return_transformer_outputs=True)
+
+        logits = self.classifier(embeddings)
+
+        loss = None
+        if labels is not None:
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(logits.squeeze(), labels.squeeze())
+                else:
+                    loss = loss_fct(logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+        if not return_dict:
+            output = (logits,) + transformer_outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+
+        return NodeClassificationOutput(
+            loss=loss,
+            logits=logits
+        )
 
 

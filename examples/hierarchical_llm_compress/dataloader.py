@@ -25,18 +25,16 @@ from graphstorm.dataloading.utils import trim_data
 class HierarchiCompressNodeDataLoader(GSgnnNodeDataLoader):
     """ The minibatch dataloader for node centric tasks
     """
-    def __init__(self, dataset, prepare_input_fn,
+    def __init__(self, dataset,
                  target_idx, fanout, batch_size,
                  device, train_task, tokenizer_max_length,
                  pad_token_id,
-                 pin_memory, data_collator,
+                 pin_memory,
                  num_workers=0, drop_last=True):
         self._tokenizer_max_length = tokenizer_max_length
         self._num_workers = num_workers
         self._drop_last = drop_last
         self._pin_memory = pin_memory
-        self._data_collator = data_collator
-        self._prepare_input_fn = prepare_input_fn
         self._pad_token_id = pad_token_id
 
         super(HierarchiCompressNodeDataLoader, self).__init__(dataset, target_idx, fanout, batch_size, device, train_task)
@@ -47,12 +45,7 @@ class HierarchiCompressNodeDataLoader(GSgnnNodeDataLoader):
                 "HierarchiCompressNodeDataLoader only works with homogeneous graph"
 
         self._fanout = fanout
-        # Compute an upper bound of the size of the ego network of a seed node
-        # We are going to compact the ego network of each seed node into tensors so that
-        # huggingface trainer can consume it.
-
-
-
+        self._batch_size = batch_size
         for ntype in target_idx:
             target_idx[ntype] = trim_data(target_idx[ntype], device)
         sampler = dgl.dataloading.MultiLayerNeighborSampler(fanout)
@@ -89,6 +82,7 @@ class HierarchiCompressNodeDataLoader(GSgnnNodeDataLoader):
                     "We don't know the input node type, but the graph has more than one node type."
             input_nodes = {g.ntypes[0]: input_nodes}
 
+        labels = data.get_labels(seeds, self.device)
         input_ids = data.get_node_feats(input_nodes, 'input_ids')
         input_ids = input_ids.flatten()
         attention_masks = data.get_node_feats(input_nodes, 'attention_mask')
@@ -117,19 +111,36 @@ class HierarchiCompressNodeDataLoader(GSgnnNodeDataLoader):
             F.pad(attention_masks,
                   pad=(0, max_num_nids*self._tokenizer_max_length - len(attention_masks)))
 
-        return (src_ids, dst_ids, input_ids, attention_masks)
+        return (src_ids, dst_ids, input_ids, attention_masks, labels)
 
     def __next__(self):
-        input_nodes, seeds, blocks = self.dataloader.__next__()
-        batch = self._prepare_input(self.data, input_nodes, seeds, blocks,
-                                       tokenizer_max_length=self._tokenizer_max_length)
-
-        if self._pin_memory:
-            batch = [data.pin_memory() if data is not None else None for data in list(batch)]
-
-        # Build batch from sampled graph.
-        return self._data_collator([{
+        batches = {
             "src_ids": batch[0],
             "dst_ids": batch[1],
             "input_ids": batch[2],
-            "attention_mask": batch[3]}])
+            "attention_mask": batch[3],
+            "labels":batch[4]
+        }
+
+        for _ in range(self._batch_size):
+            input_nodes, seeds, blocks = self.dataloader.__next__()
+            batch = self._prepare_input(self.data, input_nodes, seeds, blocks,
+                                        tokenizer_max_length=self._tokenizer_max_length)
+
+            if self._pin_memory:
+                batch = [data.pin_memory() if data is not None else None for data in list(batch)]
+
+            batches["src_ids"].append(batch[0])
+            batches["dst_ids"].append(batch[1])
+            batches["input_ids"].append(batch[2])
+            batches["attention_mask"].append(batch[3])
+            batches["labels"].append(batch[4])
+
+        batches["src_ids"] = th.stack(batches["src_ids"])
+        batches["dst_ids"] = th.stack(batches["dst_ids"])
+        batches["input_ids"] = th.stack(batches["input_ids"])
+        batches["attention_mask"] = th.stack(batches["attention_mask"])
+        batches["labels"] = th.stack(batches["labels"])
+
+        # Build batch from sampled graph.
+        return batches

@@ -22,11 +22,11 @@ import evaluate
 import numpy as np
 
 import graphstorm as gs
-from graphstorm import model as gsmodel
 from graphstorm.config import get_argument_parser
 from graphstorm.config import GSConfig
 from graphstorm.config import (BUILTIN_TASK_NODE_CLASSIFICATION,
                                BUILTIN_TASK_NODE_REGRESSION)
+from graphstorm.dataloader import GSgnnNodeTrainData
 from graphstorm.model.node_decoder import EntityClassifier, EntityRegression
 from graphstorm.model.loss_func import (ClassifyLossFunc,
                                         RegressionLossFunc)
@@ -34,17 +34,16 @@ from graphstorm.utils import setup_device, get_log_level
 
 import transformers
 from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoTokenizer,
     TrainingArguments,
-    Trainer,
     HfArgumentParser,
 )
 
-from .config import ModelArguments
-from .lm_model import load_hf_tokenizer, load_hf_model
-from .hlc_trainer import HLCNodePredictionTrainer
+
+from config import ModelArguments
+from lm_model import load_hf_tokenizer, load_hf_model
+from lm_model import LMForGraphNodeTask
+from hlc_trainer import HLCNodePredictionTrainer
+from dataloader import HierarchiCompressNodeDataLoader
 
 SUPPORTED_MODEL_DICT = {
     "bert": "bert-base-cased",
@@ -68,7 +67,7 @@ def create_node_hierarchical_lm_compress_model(args, gs_config, model_args):
     config.pooling_strategy = model_args.pooling_strategy
 
     output_name += f"_{config.pooling_strategy}_pooling"
-    model = LMForGraphNodeTask(config=config, encoder=encoder, text=text)
+    model = LMForGraphNodeTask(config=config, encoder=encoder)
 
     if gs_config.task_type == BUILTIN_TASK_NODE_CLASSIFICATION:
             decoder = {}
@@ -140,9 +139,36 @@ def main(args):
         results.update(accuracy_metric.compute(predictions=preds, references = labels))
         return results
 
-    dataloader = GSgnnNodeDataLoader(xxx)
-    val_dataloader = None
-    test_dataloader = None
+    dataloader = HierarchiCompressNodeDataLoader(train_data,
+                                                 target_idx=train_data.train_idxs,
+                                                 fanout=config.fanout,
+                                                 batch_size=config.batch_size,
+                                                 device=device,
+                                                 train_task=True,
+                                                 tokenizer_max_length=model_args.tokenizer_max_length,
+                                                 pad_token_id=config.pad_token_id,
+                                                 pin_memory=True)
+    fanout = config.eval_fanout if config.use_mini_batch_infer else []
+    if len(train_data.val_idxs) > 0:
+        val_dataloader = HierarchiCompressNodeDataLoader(train_data,
+                                                        target_idx=train_data.val_idxs,
+                                                        fanout=fanout,
+                                                        batch_size=config.eval_batch_size,
+                                                        device=device,
+                                                        train_task=False,
+                                                        tokenizer_max_length=model_args.tokenizer_max_length,
+                                                        pad_token_id=config.pad_token_id,
+                                                        pin_memory=True)
+    if len(train_data.test_idxs) > 0:
+        test_dataloader = HierarchiCompressNodeDataLoader(train_data,
+                                                        target_idx=train_data.test_idxs,
+                                                        fanout=fanout,
+                                                        batch_size=config.eval_batch_size,
+                                                        device=device,
+                                                        train_task=False,
+                                                        tokenizer_max_length=model_args.tokenizer_max_length,
+                                                        pad_token_id=config.pad_token_id,
+                                                        pin_memory=True)
     trainer = HLCNodePredictionTrainer(model)
     trainer.setup_device(device=device)
     trainer.fit(
