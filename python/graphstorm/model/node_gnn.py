@@ -28,80 +28,94 @@ from ..utils import is_distributed, get_rank, is_wholegraph
 class GSgnnNodeModelInterface:
     """ The interface for GraphStorm node prediction model.
 
-    This interface defines two main methods for training and inference.
+    This interface defines two main methods: ``forward()`` for training and ``predict()``
+    for inference. Node models should inherite this interface and implement the two
+    methods.
     """
     @abc.abstractmethod
-    def forward(self, blocks, node_feats, edge_feats,
-        labels, input_nodes=None):
+    def forward(self, blocks, node_feats, edge_feats, labels, input_nodes=None):
         """ The forward function for node prediction.
 
-        This method is used for training. It takes a mini-batch, including
-        the graph structure, node features, edge features and node labels and
-        computes the loss of the model in the mini-batch.
+        This method is used for training. It takes a list of DGL message flow graphs (MFGs),
+        node features, edge features, and node labels of a mini-batch as inputs, and
+        computes the loss of the model in the mini-batch as the return value.
 
         Parameters
         ----------
-        blocks : list of DGLBlock
-            The message passing graph for computing GNN embeddings.
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graph (MFG) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
         node_feats : dict of Tensors
-            The input node features of the message passing graphs.
+            The input node features of the message passing graph.
         edge_feats : dict of Tensors
-            The input edge features of the message passing graphs.
+            The input edge features of the message passing graph.
         labels: dict of Tensor
             The labels of the predicted nodes.
         input_nodes: dict of Tensors
-            The input nodes of a mini-batch.
+            The input nodes of the mini-batch.
 
         Returns
         -------
-        The loss of prediction.
+        float: The loss of prediction of this mini-batch.
         """
 
     @abc.abstractmethod
     def predict(self, blocks, node_feats, edge_feats, input_nodes, return_proba):
-        """ Make prediction on the nodes with GNN.
+        """ Make prediction on the input nodes.
+
+        This method is used for inference. It takes a list of DGL message flow graphs (MFGs),
+        node features, edge features, and input node of a mini-batch as input, and
+        computes the predictions of the input nodes. More detailed information about DGL MFG
+        can be found in `DGL Neighbor Sampling Overview
+        <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
 
         Parameters
         ----------
-        blocks : list of DGLBlock
-            The message passing graph for computing GNN embeddings.
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graph (MFG) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
         node_feats : dict of Tensors
-            The node features of the message passing graphs.
+            The node features of the message passing graph.
         edge_feats : dict of Tensors
-            The edge features of the message passing graphs.
+            The edge features of the message passing graph.
         input_nodes: dict of Tensors
-            The input nodes of a mini-batch.
+            The input nodes of the mini-batch.
         return_proba : bool
-            Whether or not to return all the predicted results or only the maximum one
+            Whether to return the predicted results, or only return the argmaxed ones in
+            classification models.
 
         Returns
         -------
-        Tensor or dict of Tensor:
-            GNN prediction results. Return all the results when return_proba is true
-            otherwise return the maximum result.
-        Tensor or dict of Tensor:
+        Tensor, or dict of Tensor:
+            Prediction results. Return results of all dimensions when ``return_proba``
+            is True, otherwise return the argmaxed results.
+        Tensor, or dict of Tensor:
             The GNN embeddings.
         """
 
 # pylint: disable=abstract-method
-class GSgnnNodeModelBase(GSgnnNodeModelInterface,
-                         GSgnnModelBase):
-    """ The base class for node-prediction GNN
+class GSgnnNodeModelBase(GSgnnNodeModelInterface, GSgnnModelBase):
+    """ GraphStorm base model class for node prediction tasks.
 
-    When a user wants to define a node prediction GNN model and train the model
-    in GraphStorm, the model class needs to inherit from this base class.
-    A user needs to implement some basic methods including `forward`, `predict`,
-    `save_model`, `restore_model` and `create_optimizer`.
+    This base class extends GraphStorm ``GSgnnModelBase`` and ``GSgnnNodeModelInterface``.
+    When users want to define a customized node prediction GNN model and train the model
+    in GraphStorm, the model class needs to inherit from this base class, and implement
+    the required methods including ``forward()``, ``predict()``, ``save_model()``,
+    ``restore_model()`` and ``create_optimizer()``.
     """
 
 
 class GSgnnNodeModel(GSgnnModel, GSgnnNodeModelInterface):
-    """ GraphStorm GNN model for node prediction tasks
+    """ GraphStorm GNN model for node prediction tasks.
 
     Parameters
     ----------
     alpha_l2norm : float
-        The alpha for L2 normalization.
+        The alpha value for L2 normalization.
     """
     def __init__(self, alpha_l2norm):
         super(GSgnnNodeModel, self).__init__()
@@ -110,7 +124,32 @@ class GSgnnNodeModel(GSgnnModel, GSgnnNodeModelInterface):
     def forward(self, blocks, node_feats, _, labels, input_nodes=None):
         """ The forward function for node prediction.
 
-        This GNN model doesn't support edge features for now.
+        This method is used for training. It takes a list of DGL message flow graphs (MFGs),
+        node features, and node labels of a mini-batch as inputs, and
+        computes the loss of the model in the mini-batch as the return value. More
+        detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+        Overview
+        <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
+
+        Parameters
+        ----------
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graph (MFG) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
+        node_feats : dict of Tensors
+            The input node features of the message passing graphs.
+        _ : This GNN node model doesn't support edge features for now.
+        labels: dict of Tensor
+            The labels of the predicted nodes in the format of {target_ntype: labels}.
+        input_nodes: dict of Tensors
+            The input nodes of a mini-batch.
+
+        Returns
+        -------
+        total_loss: float
+            The loss of prediction in this mini-batch.
         """
         alpha_l2norm = self.alpha_l2norm
         if blocks is None or len(blocks) == 0:
@@ -150,7 +189,8 @@ class GSgnnNodeModel(GSgnnModel, GSgnnNodeModelInterface):
             reg_loss += d_para.square().sum()
 
         # weighted addition to the total loss
-        return pred_loss + alpha_l2norm * reg_loss
+        total_loss = pred_loss + alpha_l2norm * reg_loss
+        return total_loss
 
     def predict(self, blocks, node_feats, _, input_nodes, return_proba):
         """ Make prediction on the nodes with GNN.
@@ -210,9 +250,9 @@ def node_mini_batch_gnn_predict(model, loader, return_proba=True, return_label=F
     preds = {}
 
     if return_label:
-        assert data.labels is not None, \
-            "Return label is required, but the label field is not provided whem" \
-            "initlaizing the inference dataset."
+        assert loader.label_field is not None, \
+            "Return label is required, but the label field is not provided when" \
+            "initlaizing the loader."
 
     embs = {}
     labels = {}
@@ -241,7 +281,8 @@ def node_mini_batch_gnn_predict(model, loader, return_proba=True, return_label=F
             if is_wholegraph():
                 tmp_keys = [ntype for ntype in g.ntypes if ntype not in input_nodes]
                 prepare_for_wholegraph(g, input_nodes)
-            input_feats = data.get_node_feats(input_nodes, device)
+            nfeat_fields = loader.node_feat_fields
+            input_feats = data.get_node_feats(input_nodes, nfeat_fields, device)
             if blocks is None:
                 continue
             # Remove additional keys (ntypes) added for WholeGraph compatibility
@@ -249,7 +290,8 @@ def node_mini_batch_gnn_predict(model, loader, return_proba=True, return_label=F
                 del input_nodes[ntype]
             blocks = [block.to(device) for block in blocks]
             pred, emb = model.predict(blocks, input_feats, None, input_nodes, return_proba)
-            label = data.get_labels(seeds)
+            label_field = loader.label_field
+            label = data.get_node_feats(seeds, label_field)
             if return_label:
                 append_to_dict(label, labels)
 
@@ -309,40 +351,80 @@ def node_mini_batch_predict(model, emb, loader, return_proba=True, return_label=
         Labels if return_labels is True
     """
     device = model.device
+    decoder = model.decoder
+    model.eval()
+    preds, labels = \
+        run_node_mini_batch_predict(decoder,
+                                    emb,
+                                    loader,
+                                    device,
+                                    return_proba,
+                                    return_label)
+    model.train()
+    return preds, labels
+
+def run_node_mini_batch_predict(decoder, emb, loader, device,
+                                return_proba=True, return_label=False):
+    """ Perform mini-batch node prediction with the given decoder.
+
+        Note: callers should call model.eval() before calling this function
+        and call model.train() after when doing training.
+
+    Parameters
+    ----------
+    decoder : GSNodeDecoder or th.nn.ModuleDict
+        The GraphStorm node decoder.
+        It can be a GSNodeDecoder or a dict of GSNodeDecoders
+    emb : dict of Tensor
+        The GNN embeddings
+    loader : GSgnnNodeDataLoader
+        The GraphStorm dataloader
+    device: th.device
+        Device used to compute prediction result
+    return_proba : bool
+        Whether or not to return all the predictions or the maximum prediction
+    return_label : bool
+        Whether or not to return labels.
+
+    Returns
+    -------
+    dict of Tensor :
+        Prediction results.
+    dict of Tensor :
+        Labels if return_labels is True
+    """
     data = loader.data
 
     if return_label:
-        assert data.labels is not None, \
-            "Return label is required, but the label field is not provided whem" \
-            "initlaizing the inference dataset."
+        assert loader.label_field is not None, \
+            "Return label is required, but the label field is not provided when" \
+            "initlaizing the inference dataloader."
 
     preds = {}
     labels = {}
     # TODO(zhengda) I need to check if the data loader only returns target nodes.
-    model.eval()
     with th.no_grad():
-        for input_nodes, seeds, _ in loader:
-            for ntype, in_nodes in input_nodes.items():
-                if isinstance(model.decoder, th.nn.ModuleDict):
-                    assert ntype in model.decoder, f"Node type {ntype} not in decoder"
-                    decoder = model.decoder[ntype]
-                else:
-                    decoder = model.decoder
+        for _, seeds, _ in loader: # seeds are target nodes
+            for ntype, seed_nodes in seeds.items():
+                if isinstance(decoder, th.nn.ModuleDict):
+                    assert ntype in decoder, f"Node type {ntype} not in decoder"
+                    decoder = decoder[ntype]
+
                 if return_proba:
-                    pred = decoder.predict_proba(emb[ntype][in_nodes].to(device))
+                    pred = decoder.predict_proba(emb[ntype][seed_nodes].to(device))
                 else:
-                    pred = decoder.predict(emb[ntype][in_nodes].to(device))
+                    pred = decoder.predict(emb[ntype][seed_nodes].to(device))
                 if ntype in preds:
                     preds[ntype].append(pred.cpu())
                 else:
                     preds[ntype] = [pred.cpu()]
                 if return_label:
-                    lbl = data.get_labels(seeds)
+                    label_field = loader.label_field
+                    lbl = data.get_node_feats(seeds, label_field)
                     if ntype in labels:
                         labels[ntype].append(lbl[ntype])
                     else:
                         labels[ntype] = [lbl[ntype]]
-    model.train()
 
     for ntype, ntype_pred in preds.items():
         preds[ntype] = th.cat(ntype_pred)

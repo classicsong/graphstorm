@@ -16,6 +16,13 @@ python3 -m graphstorm.gconstruct.construct_graph \
 	--graph-name movie-lens-100k \
 	--add-reverse-edges
 
+python3 -m graphstorm.gconstruct.construct_graph \
+	--conf-file $GS_HOME/tests/end2end-tests/data_gen/movielens_small_val.json \
+	--num-processes 1 \
+	--output-dir movielen_100k_train_small_val_1p_4t \
+	--graph-name movie-lens-100k \
+	--add-reverse-edges
+
 # movielens node classification removing test mask
 rm -Rf /data/movielen_100k_train_notest_1p_4t
 cp -R /data/movielen_100k_train_val_1p_4t /data/movielen_100k_train_notest_1p_4t
@@ -40,6 +47,7 @@ python3 -m graphstorm.gconstruct.construct_graph \
 	--output-dir movielen_100k_lp_train_val_1p_4t \
 	--graph-name movie-lens-100k \
 	--add-reverse-edges
+cp -R /data/ml-100k/raw_id_mappings/ movielen_100k_lp_train_val_1p_4t/
 
 # movielens link prediction - hard negative and fixed negative for inference
 rm -Rf /data/movielen_100k_lp_train_val_hard_neg_1p_4t
@@ -162,6 +170,13 @@ python3 -m graphstorm.gconstruct.construct_graph \
 	--conf-file $GS_HOME/tests/end2end-tests/data_gen/movielens_multi_target_ntypes.json \
 	--num-processes 1 \
 	--output-dir movielen_100k_multi_target_ntypes_train_val_1p_4t \
+	--graph-name movie-lens-100k \
+	--add-reverse-edges
+
+python3 -m graphstorm.gconstruct.construct_graph \
+	--conf-file $GS_HOME/tests/end2end-tests/data_gen/movielens_multi_task.json \
+	--num-processes 1 \
+	--output-dir movielen_100k_multi_task_train_val_1p_4t \
 	--graph-name movie-lens-100k \
 	--add-reverse-edges
 

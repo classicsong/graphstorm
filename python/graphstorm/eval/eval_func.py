@@ -24,15 +24,16 @@ import torch as th
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import precision_recall_curve, auc, classification_report
 
+SUPPORTED_HIT_AT_METRICS = 'hit_at'
 SUPPORTED_CLASSIFICATION_METRICS = {'accuracy', 'precision_recall', \
-    'roc_auc', 'f1_score', 'per_class_f1_score', 'per_class_roc_auc'}
+    'roc_auc', 'f1_score', 'per_class_f1_score', 'per_class_roc_auc', SUPPORTED_HIT_AT_METRICS}
 SUPPORTED_REGRESSION_METRICS = {'rmse', 'mse', 'mae'}
-SUPPORTED_LINK_PREDICTION_METRICS = {"mrr"}
+SUPPORTED_LINK_PREDICTION_METRICS = {"mrr", SUPPORTED_HIT_AT_METRICS}
 
 class ClassificationMetrics:
     """ object that compute metrics for classification tasks.
     """
-    def __init__(self, multilabel):
+    def __init__(self, eval_metric_list, multilabel):
         self.supported_metrics = SUPPORTED_CLASSIFICATION_METRICS
         self.multilabel = multilabel
 
@@ -63,11 +64,25 @@ class ClassificationMetrics:
         self.metric_eval_function["per_class_f1_score"] = compute_per_class_f1_score
         self.metric_eval_function["per_class_roc_auc"] = compute_per_class_roc_auc
 
+        for eval_metric in eval_metric_list:
+            if eval_metric.startswith(SUPPORTED_HIT_AT_METRICS):
+                k = int(eval_metric[len(SUPPORTED_HIT_AT_METRICS)+1:])
+                self.metric_comparator[eval_metric] = operator.le
+                self.metric_function[eval_metric] = \
+                    partial(compute_hit_at_classification, k=k)
+                self.metric_eval_function[eval_metric] = \
+                    partial(compute_hit_at_classification, k=k)
+
     def assert_supported_metric(self, metric):
         """ check if the given metric is supported.
         """
-        assert metric in self.supported_metrics, \
-            f"Metric {metric} not supported for classification"
+        if metric.startswith(SUPPORTED_HIT_AT_METRICS):
+            assert metric[len(SUPPORTED_HIT_AT_METRICS)+1:].isdigit(), \
+                            "hit_at_k evaluation metric for classification " \
+                            f"must end with an integer, but get {metric}"
+        else:
+            assert metric in self.supported_metrics, \
+                f"Metric {metric} not supported for classification"
 
     def init_best_metric(self, metric):
         """
@@ -103,6 +118,12 @@ class RegressionMetrics:
         self.metric_function["mse"] = compute_mse
         self.metric_function["mae"] = compute_mae
 
+        # This is the operator used to measure each metric performance in evaluation
+        self.metric_eval_function = {}
+        self.metric_eval_function["rmse"] = compute_rmse
+        self.metric_eval_function["mse"] = compute_mse
+        self.metric_eval_function["mae"] = compute_mae
+
     def assert_supported_metric(self, metric):
         """ check if the given metric is supported.
         """
@@ -127,19 +148,47 @@ class RegressionMetrics:
 
 class LinkPredictionMetrics:
     """ object that compute metrics for LP tasks.
+
+    Parameters
+    ----------
+    eval_metric_list: list of string
+        Evaluation metric(s) used during evaluation, for example, ["hit_at_10", "hit_at_100"].
     """
-    def __init__(self):
+    def __init__(self, eval_metric_list=None):
         self.supported_metrics = SUPPORTED_LINK_PREDICTION_METRICS
 
         # This is the operator used to compare whether current value is better than the current best
         self.metric_comparator = {}
         self.metric_comparator["mrr"] = operator.le
 
+        # This is the operator used to measure each metric performance
+        self.metric_function = {}
+        self.metric_function["mrr"] = compute_mrr
+
+        # This is the operator used to measure each metric performance in evaluation
+        self.metric_eval_function = {}
+        self.metric_eval_function["mrr"] = compute_mrr
+
+        if eval_metric_list:
+            for eval_metric in eval_metric_list:
+                if eval_metric.startswith(SUPPORTED_HIT_AT_METRICS):
+                    k = int(eval_metric[len(SUPPORTED_HIT_AT_METRICS) + 1:])
+                    self.metric_comparator[eval_metric] = operator.le
+                    self.metric_function[eval_metric] = \
+                        partial(compute_hit_at_link_prediction, k=k)
+                    self.metric_eval_function[eval_metric] = \
+                        partial(compute_hit_at_link_prediction, k=k)
+
     def assert_supported_metric(self, metric):
         """ check if the given metric is supported.
         """
-        assert metric in self.supported_metrics, \
-            f"Metric {metric} not supported for link prediction"
+        if metric.startswith(SUPPORTED_HIT_AT_METRICS):
+            assert metric[len(SUPPORTED_HIT_AT_METRICS) + 1:].isdigit(), \
+                "hit_at_k evaluation metric for link prediction " \
+                f"must end with an integer, but get {metric}"
+        else:
+            assert metric in self.supported_metrics, \
+                f"Metric {metric} not supported for link prediction"
 
     def init_best_metric(self, metric):
         """
@@ -180,6 +229,62 @@ def labels_to_one_hot(labels, total_labels):
     for i, label in enumerate(labels):
         one_hot[i,label]=1
     return one_hot
+
+def compute_hit_at_classification(preds, labels, k=100):
+    """ Compute hit@k for classification tasks
+
+        Parameters
+        ----------
+        preds : tensor
+            A 1-D tensor for single-label classification.
+        labels : tensor
+            A 1-D tensor for single-label classification.
+        k: int
+            Hit@K
+    """
+    assert len(preds.shape) == 2 \
+        and preds.shape[1] == 2, \
+        "Computing hit@K for classification only works for binary classification tasks." \
+        "The preds must be a 2D tensor with the second dimension of 2. "
+
+    assert len(labels.shape) == 1 or (len(labels.shape) == 2 and labels.shape[1] == 1), \
+        "The labels must be a 1D tensor or a 2D tensor with the second dimension of 1"
+
+    # preds is a 2D tensor storing
+    # [probability of label 0, probability of label 1]
+    # 0 means negative, 1 means positive.
+    # We compute hit@K for positive labels
+    preds = preds[:,1]
+    if len(labels.shape) == 2:
+        labels = th.squeeze(labels)
+    sort_idx = th.argsort(preds, descending=True)
+    hit_idx = sort_idx[:k]
+    hit_labels = labels[hit_idx]
+    return th.sum(hit_labels)
+
+
+def compute_hit_at_link_prediction(ranking, k=100):
+    """ Compute hit@k for link prediction tasks
+
+        Parameters
+        ----------
+        ranking: tensor
+            A tensor for the ranking of positive edges
+        k: int
+            Hit@K
+
+        Returns
+        -------
+        float: Hit at K score
+    """
+    assert len(ranking.shape) == 1 or (len(ranking.shape) == 2 and ranking.shape[1] == 1), \
+        "The ranking must be a 1D tensor or a 2D tensor with the second dimension of 1. "
+
+    if len(ranking.shape) == 2:
+        ranking = th.squeeze(ranking)
+
+    metric = th.div(th.sum(ranking <= k), len(ranking))
+    return metric
 
 def eval_roc_auc(logits,labels):
     ''' Compute roc_auc score.
@@ -423,7 +528,7 @@ def compute_per_class_roc_auc(y_preds, y_targets):
         Returns
         -------
         A dictionary of auc_roc scores, including average auc_roc score, and score for each class.
-    
+
     """
     assert len(y_preds.shape) == 2 and y_preds.shape[1] >= 2, 'ERROR: the given prediction ' + \
                                                               'should be a 2D tensor and the ' + \
@@ -479,7 +584,7 @@ def compute_precision_recall_auc(y_preds, y_targets, weights=None):
         weights: List of weights with the same number of classes in labels.
         Returns
         -------
-        float: The precision_recall_auc score.   
+        float: The precision_recall_auc score.
     """
     y_true = y_targets.cpu().numpy()
     y_pred = y_preds.cpu().numpy()
@@ -583,3 +688,19 @@ def compute_mae(pred, labels):
 
     diff = th.abs(pred.cpu() - labels.cpu())
     return th.mean(diff).cpu().item()
+
+def compute_mrr(ranking):
+    """ Get link prediction mrr metrics
+
+        Parameters
+        ----------
+        ranking:
+            ranking of each positive edge
+
+        Returns
+        -------
+        link prediction mrr metrics: tensor
+    """
+    logs = th.div(1.0, ranking)
+    metrics = th.tensor(th.div(th.sum(logs),len(logs)))
+    return metrics

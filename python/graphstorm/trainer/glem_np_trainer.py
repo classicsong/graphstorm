@@ -30,19 +30,14 @@ from ..utils import barrier, get_rank, is_distributed
 from ..dataloading import GSgnnNodeSemiSupDataLoader
 
 class GLEMNodePredictionTrainer(GSgnnNodePredictionTrainer):
-    """ A trainer for node prediction using GLEM.
+    r""" Trainer for node prediction tasks using the `GLEM
+    framework <https://arxiv.org/abs/2210.14709>`__.
 
     This class is used to train models for node prediction tasks,
-    such as node classification and node regression, using the
-    GLEM framework [1].
+    such as node classification and node regression using the GLEM.
 
-    GLEM will iteratively train a GNN and a Language Model in
-    turn, allowing it to make better use of textual information
-    in the graph.
-
-    The input `model` needs to be an instance of `model.node_glem.GLEM`
-
-    [1] https://arxiv.org/abs/2210.14709
+    GLEM iteratively trains a GNN model and a language model in
+    turn, allowing it to make better use of textual features in graphs.
 
     Parameters
     ----------
@@ -58,15 +53,15 @@ class GLEMNodePredictionTrainer(GSgnnNodePredictionTrainer):
     .. code:: python
 
         from graphstorm.dataloading import GSgnnNodeDataLoader
-        from graphstorm.dataset import GSgnnNodeTrainData
+        from graphstorm.dataset import GSgnnData
         from graphstorm.model.node_glem import GLEM
         from graphstorm.trainer import GLEMNodePredictionTrainer
 
-        my_dataset = GSgnnNodeTrainData(
-            "my_graph", "/path/to/part_config", "my_node_type")
+        my_dataset = GSgnnData("/path/to/part_config")
         target_idx = {"my_node_type": target_nodes_tensor}
         my_data_loader = GSgnnNodeDataLoader(
-            my_dataset, target_idx, fanout=[10], batch_size=1024, device='cpu')
+            my_dataset, target_idx, fanout=[10], batch_size=1024,
+            label_field="label", node_feats="feat", device='cpu')
         my_model = GLEM(alpha_l2norm=0.0, target_ntype="my_node_type")
 
         trainer =  GLEMNodePredictionTrainer(my_model, topk_model_to_save=1)
@@ -208,11 +203,13 @@ class GLEMNodePredictionTrainer(GSgnnNodePredictionTrainer):
                 assert len(g.ntypes) == 1
                 input_nodes = {g.ntypes[0]: input_nodes}
 
-            input_feats = data.get_node_feats(input_nodes, device)
+            nfeat_fields = train_loader.node_feat_fields
+            input_feats = data.get_node_feats(input_nodes, nfeat_fields, device)
             profiler.record('train_node_feats')
             lbl = None
             if is_labeled:
-                lbl = data.get_labels(seeds, device)
+                label_field = train_loader.label_field
+                lbl = data.get_node_feats(seeds, label_field, device)
             blocks = [block.to(device) for block in blocks]
             profiler.record('train_graph2GPU')
             return input_nodes, input_feats, blocks, lbl
@@ -254,41 +251,51 @@ class GLEMNodePredictionTrainer(GSgnnNodePredictionTrainer):
                              get_rank(), epoch, i,  loss.item(), time.time() - batch_tic)
 
             val_score = None
-            if self.evaluator is not None and \
-                self.evaluator.do_eval(total_steps, epoch_end=False) and \
-                val_loader is not None:
+            if self.can_do_validation(val_loader) and self.evaluator.do_eval(total_steps):
                 val_score = self.eval(model.module, val_loader, test_loader,
-                                        use_mini_batch_infer, total_steps, return_proba=False)
+                                      use_mini_batch_infer, total_steps, return_proba=False)
 
                 if self.evaluator.do_early_stop(val_score):
                     self.early_stop = True
 
+            # In every save_model_frequency iterations, check to save the top k models.
+            # If has validation score, will save the best top k. If no validation, will
+            # either save the last k model or all models depends on the setting of top k.
             if save_model_frequency > 0 and \
                 total_steps % save_model_frequency == 0 and \
                 total_steps != 0:
-                if self.evaluator is None or val_score is not None:
-                    # We will save the best model when
-                    # 1. There is no evaluation, we will keep the
-                    #    latest K models.
-                    # 2. There is evaluaiton, we need to follow the
-                    #    guidance of validation score.
-                    self.save_topk_models(model, epoch, i, val_score, save_model_path)
+                if val_score is None:
+                    # not in the same eval_frequncy iteration
+                    if self.can_do_validation(val_loader):
+                        # for model saving, force to do evaluation if can
+                        val_score = self.eval(model.module, val_loader, test_loader,
+                                            use_mini_batch_infer, total_steps, return_proba=False)
+                # We will save the best model when
+                # 1. If not do evaluation, we will keep the latest K models.
+                # 2. If do evaluaiton, we need to follow the guidance of validation score.
+                self.save_topk_models(model, epoch, i, val_score, save_model_path)
+
             rt_profiler.record('train_eval')
             # early_stop, exit current interation.
             if self.early_stop is True:
                 break
 
-        # end of an epoch
+        # ------- end of an epoch -------
+
         barrier()
 
         val_score = None
-        if self.evaluator is not None and self.evaluator.do_eval(total_steps, epoch_end=True):
+        # do evaluation and model saving after each epoch if can
+        if self.can_do_validation(val_loader):
             val_score = self.eval(model.module, val_loader, test_loader,
-                                    use_mini_batch_infer, total_steps, return_proba=False)
+                                  use_mini_batch_infer, total_steps, return_proba=False)
             if self.evaluator.do_early_stop(val_score):
                 self.early_stop = True
+
         # After each epoch, check to save the top k models. If has validation score, will save
         # the best top k. But if no validation, will either save the last k model or all models
         # depends on the setting of top k. To show this is after epoch save, set the iteration
         # to be None, so that we can have a determistic model folder name for testing and debug.
         self.save_topk_models(model, epoch, None, val_score, save_model_path)
+        # make sure saving model finishes properly before the main process kills this training
+        barrier()

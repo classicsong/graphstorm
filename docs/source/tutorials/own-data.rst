@@ -152,7 +152,10 @@ The examplary ACM graph also predifines two sets of labels. One set of labels ar
 
 Customized label split
 `````````````````````````
-If users want to split labels with your own logics, e.g., time sequence, you can split labels first, and then provide the split information in the configuration JSON file like the below example.
+If users want to split labels with your own logics, e.g., time sequence, you can split labels first, and then provide the split information in the configuration JSON file or parquet file like the example below.
+When using parquet files as input, please specify the column object you want to use for your labels. The column object here can be either a string or a list with a single string. When using parquet input, it allows input be either string or list of strings and it allows wildcard as the input.
+
+JSON:
 
 .. code-block:: json
 
@@ -166,7 +169,22 @@ If users want to split labels with your own logics, e.g., time sequence, you can
         }
     ]
 
-Instead of using the ``split_pct``, users can specify the ``custom_split_filenames`` configuration with a value, which is a dictionary, to use custom data split. Currently, custom data split only supports node tasks. The dictionary's keys could include ``train``, ``valid``, and ``test``, and values of the dictionary are JSON files that contains node IDs in each set.
+Parquet:
+
+.. code-block:: json
+
+    "labels": [
+        {
+            "label_col": "label",
+            "task_type": "classification",
+            "custom_split_filenames": {"train": "/tmp/acm_raw/nodes/train_idx.parquet",
+                                       "valid": ["/tmp/acm_raw/nodes/val_idx_1.parquet", "/tmp/acm_raw/nodes/val_idx_2.parquet"],
+                                       "test": "/tmp/acm_raw/nodes/test_idx_*.parquet"
+                                        "column": "ID"}
+        }
+    ]
+
+Instead of using the ``split_pct``, users can specify the ``custom_split_filenames`` configuration with a value, which is a dictionary, to use custom data split. The dictionary's keys could include ``train``, ``valid``, and ``test``, and values of the dictionary are JSON files that contains node IDs in each set.
 
 These JSON files only need to list the IDs on its own set. For example, in a node classification task, there are 100 nodes and node ID starts from 0, and assume the last 50 nodes (ID from 49 to 99) have labels associated. For some business logic, users want to have the first 10 of the 50 labeled nodes as training set, the last 30 as the test set, and the middle 10 as the validation set. Then the `train_idx.json` file should contain the integer from 50 to 59, and one integer per line. Similarly, the `val_idx.json` file should contain the integer from 60 to 69, and the `test_idx.json` file should contain the integer from 70 to 99. Contents of the `train_idx.json` file are like the followings.
 
@@ -178,6 +196,48 @@ These JSON files only need to list the IDs on its own set. For example, in a nod
     ...
     59
 
+For edge data, users can do the similar thing as defining customized node labels to define the customized edge labels. The configuration looks same for JSON files, for parquet files, users need to specify both the source id column and destination id column in a list of strings:
+
+JSON:
+
+.. code-block:: json
+
+    "labels": [
+        {
+            "label_col": "label",
+            "task_type": "classification",
+            "custom_split_filenames": {"train": "/tmp/acm_raw/edges/train_idx.json",
+                                       "valid": "/tmp/acm_raw/edges/val_idx.json",
+                                       "test": "/tmp/acm_raw/edges/test_idx.json"}
+        }
+    ]
+
+Parquet:
+
+.. code-block:: json
+
+    "labels": [
+        {
+            "label_col": "label",
+            "task_type": "classification",
+            "custom_split_filenames": {"train": "/tmp/acm_raw/edges/train_idx.parquet",
+                                       "valid": "/tmp/acm_raw/edges/val_idx.parquet",
+                                       "test": "/tmp/acm_raw/edges/test_idx.parquet",
+                                       "column":  ["src", "dst"]}
+        }
+    ]
+
+The values of dictionary files should be json as well here. Each line of the json file should an array with the source node and destination node. For example, contents of `train_idx.json` should look like the following:
+
+.. code-block:: yaml
+
+    ["p0", "p1301"]
+    ["p0", "p9830"]
+    ["p1", "p1910"]
+    ["p1", "p2165"]
+    ["p1", "p6894"]
+    ["p12497", "p12498"]
+
 .. _raw-data-files:
 
 Input raw node/edge data files
@@ -188,6 +248,9 @@ The raw node and edge data files are both in a parquet format, whose contents ar
     :align: center
 
 In this example, only the ``paper`` nodes have labels and the task is node classification. So, in the JSON file, the ``paper`` node has the ``labels`` field, and the ``task_type`` is specified as ``classification``. Correspondingly, in the paper node parquet file, there is a column, ``label``, stores the label values. All edge types do not have features associated. Therefore, we only have two columns in these parquet files for edges, the ``source_id`` and the ``dest_id``. For the link prediction task, there is no actual labels. Users just need to specify the ``labels`` field in one or more ``edge`` objects of the JSON config file.
+
+
+.. _run-graph-construction:
 
 Run graph construction
 ```````````````````````
@@ -244,8 +307,8 @@ Required DGL graph format
 ```````````````````````````
 - a `dgl.heterograph <https://docs.dgl.ai/generated/dgl.heterograph.html#dgl.heterograph>`_.
 - All nodes/edges features are set in nodes/edges' data field, and remember the feature names, which will be used in the later steps.
-    - For nodes' features, the common way to set features is like ``g.nodes['nodetypename'].data['featurename']=nodefeaturetensor``, The formal explanation of DGL's node feature could be found in the `Using node features <https://docs.dgl.ai/generated/dgl.DGLGraph.nodes.html>`_.
-    - For edges' features, the common way to set features is like ``g.edges['edgetypename'].data['featurename']=edgefeaturetensor``, The formal explanation of DGL's edge feature could be found in the `Using edge features <https://docs.dgl.ai/generated/dgl.DGLGraph.edges.html>`_.
+    - For nodes' features, the common way to set features is like ``g.nodes['nodetypename'].data['featurename']=nodefeaturetensor``, The formal explanation of DGL's node feature could be found in the `Using node features <https://docs.dgl.ai/generated/dgl.DGLGraph.nodes.html>`_. Please make sure every node feature is a 2D tensor.
+    - For edges' features, the common way to set features is like ``g.edges['edgetypename'].data['featurename']=edgefeaturetensor``, The formal explanation of DGL's edge feature could be found in the `Using edge features <https://docs.dgl.ai/generated/dgl.DGLGraph.edges.html>`_. Please make sure every edge feature is a 2D tensor.
 - Save labels (for node/edge tasks) into the target nodes/edges as a feature, and remember the label feature names, which will be used in the later steps.
     - The common way to set node-related labels as a feature is like ``g.nodes['predictnodetypename'].data['labelname']=nodelabeltensor``.
     - The common way to set edge-related labels as a feature is like ``g.nodes['predictedgetypename'].data['labelname']=edgelabeltensor``.
@@ -310,7 +373,7 @@ In terms of link prediction task, run the following command to partition the dat
            --target-etype paper,citing,paper \
            --output /tmp/acm_lp
 
-Please refer to :ref:`Graph Partition Configurations <configurations-partition>` to find more details of the arguments of the two partition tools.
+Please refer to :ref:`Graph Partition for DGL Graphs <configurations-partition>` guideline for more details of the arguments of the two partition tools.
 
 Step 2: Modify the YAML configuration file to include your own data's information
 -----------------------------------------------------------------------------------
@@ -435,7 +498,7 @@ Similar to the :ref:`Quick-Start <quick-start-standalone>` tutorial, users can l
               --node-feat-name paper:feat author:feat subject:feat \
               --restore-model-path /tmp/acm_nc/models/epoch-0 \
               --save-prediction-path  /tmp/acm_nc/predictions
-    
+
     # Link Prediction
     python -m graphstorm.run.gs_link_prediction \
               --inference \

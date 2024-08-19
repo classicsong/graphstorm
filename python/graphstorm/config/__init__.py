@@ -24,7 +24,9 @@ from .config import (BUILTIN_TASK_NODE_CLASSIFICATION,
                      BUILTIN_TASK_EDGE_CLASSIFICATION,
                      BUILTIN_TASK_EDGE_REGRESSION,
                      BUILTIN_TASK_LINK_PREDICTION,
-                     BUILTIN_TASK_COMPUTE_EMB)
+                     BUILTIN_TASK_COMPUTE_EMB,
+                     BUILTIN_TASK_RECONSTRUCT_NODE_FEAT,
+                     BUILTIN_TASK_MULTI_TASK)
 from .config import SUPPORTED_TASKS
 
 from .config import BUILTIN_LP_DOT_DECODER
@@ -46,3 +48,5 @@ from .config import (BUILTIN_LP_LOSS_CROSS_ENTROPY,
                      BUILTIN_LP_LOSS_CONTRASTIVELOSS)
 from .config import (GRAPHSTORM_LP_EMB_L2_NORMALIZATION,
                      GRAPHSTORM_LP_EMB_NORMALIZATION_METHODS)
+
+from .config import TaskInfo

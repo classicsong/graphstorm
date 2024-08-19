@@ -24,7 +24,8 @@ import dgl.nn as dglnn
 
 from dgl.nn.pytorch.hetero import get_aggregate_fn
 from .ngnn_mlp import NGNNMLP
-from .gnn_encoder_base import GraphConvEncoder
+from .gnn_encoder_base import (GraphConvEncoder,
+                               GSgnnGNNEncoderInterface)
 
 
 class RelGraphConvLayer(nn.Module):
@@ -33,10 +34,10 @@ class RelGraphConvLayer(nn.Module):
 
     A generic module for computing convolution on heterogeneous graphs.
 
-    The relational graph convolution layer applies GraphConv on the relation graphs,
+    The relational graph convolution layer applies GraphConv on the heterogeneous graphs,
     which reads the features from source nodes and writes the updated ones to destination nodes.
     If multiple relations have the same destination node types, their results
-    are aggregated by the specified method. If the relation graph has no edge,
+    are aggregated by the specified method. If the heterogeneous graph has no edge,
     the corresponding module will not be called.
 
     Mathematically for the GraphConv it is defined as follows:
@@ -49,19 +50,11 @@ class RelGraphConvLayer(nn.Module):
     (i.e.,  :math:`c_{ji} = \sqrt{|\mathcal{N}(j)|}\sqrt{|\mathcal{N}(i)|}`),
     and :math:`\sigma` is an activation function.
 
-    If a weight tensor on each edge is provided, the weighted graph convolution is defined as:
-
-    .. math::
-      h_i^{(l+1)} = \sigma(b^{(l)} + \sum_{j\in\mathcal{N}(i)}\frac{e_{ji}}{c_{ji}}h_j^{(l)}W^{(l)})
-
-    where :math:`e_{ji}` is the scalar weight on the edge from node :math:`j` to node :math:`i`.
-    This is NOT equivalent to the weighted graph convolutional network formulation in the paper.
-
     Note:
-    -----
-    * In the RelGraphConvLayer, the implementation select 'right' or the default option for the norm
-    to divide the aggregated messages by each node's in-degrees, which is equivalent to averaging
-    the received messages.
+    ******
+    * The implementation of ``RelGraphConvLayer`` selects `right` as the norm, which divides
+      the aggregated messages by each node's in-degrees, equivalent to averaging the received
+      messages.
 
     Examples:
     ----------
@@ -69,41 +62,42 @@ class RelGraphConvLayer(nn.Module):
     .. code:: python
 
         # suppose graph and input_feature are ready
-        from graphstorm.model.rgcn_encoder import RelGraphConvLayer
+        from graphstorm.model import RelGraphConvLayer
 
         layer = RelGraphConvLayer(
-                h_dim, h_dim, g.canonical_etypes,
-                num_bases, activation, self_loop,
+                in_feat=h_dim, out_feat=h_dim, rel_names=g.canonical_etypes,
+                num_bases=num_bases, self_loop,
                 dropout, num_ffn_layers_in_gnn,
                 ffn_activation, norm)
         h = layer(g, input_feature)
 
     Parameters
     ----------
-    in_feat : int
+    in_feat: int
         Input feature size.
-    out_feat : int
+    out_feat: int
         Output feature size.
-    rel_names : list[str]
-        Relation names.
-    num_bases : int
-        Number of bases. If is none, use number of relations. Default: None.
-    weight : bool, optional
-        True if a linear layer is applied after message passing. Default: True
-    bias : bool, optional
-        True if bias is added. Default: True
-    activation : callable, optional
-        Activation function. Default: None
-    self_loop : bool, optional
-        True to include self loop message. Default: False
-    dropout : float, optional
-        Dropout rate. Default: 0.0
-    num_ffn_layers_in_gnn: int, optional
-        Number of layers of ngnn between gnn layers
+    rel_names: list of tuple
+        Relation type list in the format of [('src_ntyp1', 'etype1', 'dst_ntype1`), ...].
+    num_bases: int
+        Number of bases. If is None, use number of relation types. Default: None.
+    weight: bool
+        Whether to apply a linear layer after message passing. Default: True.
+    bias: bool
+        Whether to add bias. Default: True.
+    activation: callable
+        Activation function. Default: None.
+    self_loop: bool
+        Whether to include self loop message. Default: True.
+    dropout: float
+        Dropout rate. Default: 0.
+    num_ffn_layers_in_gnn: int
+        Number of fnn layers between gnn layers. Default: 0.
     ffn_actication: torch.nn.functional
-        Activation Method for ngnn
-    norm : str, optional
-        Normalization Method. Default: None
+        Activation for ffn. Default: relu.
+    norm: str
+        Normalization methods. Options:``batch``, ``layer``, and ``None``. Default: None,
+        meaning no normalization.
     """
     def __init__(self,
                  in_feat,
@@ -114,7 +108,7 @@ class RelGraphConvLayer(nn.Module):
                  weight=True,
                  bias=True,
                  activation=None,
-                 self_loop=False,
+                 self_loop=True,
                  dropout=0.0,
                  num_ffn_layers_in_gnn=0,
                  ffn_activation=F.relu,
@@ -178,21 +172,36 @@ class RelGraphConvLayer(nn.Module):
                                      num_ffn_layers_in_gnn, ffn_activation, dropout)
 
         self.dropout = nn.Dropout(dropout)
+        self.warn_msg = set()
 
-    # pylint: disable=invalid-name
-    def forward(self, g, inputs):
-        """Forward computation
+    def warning_once(self, warn_msg):
+        """ Print same warning msg only once
 
         Parameters
         ----------
-        g : DGLHeteroGraph
-            Input graph.
-        inputs : dict[str, torch.Tensor]
-            Node feature for each node type.
+        warn_msg: str
+            Warning message.
+        """
+        if warn_msg in self.warn_msg:
+            # Skip printing warning
+            return
+        self.warn_msg.add(warn_msg)
+        logging.warning(warn_msg)
+
+    # pylint: disable=invalid-name
+    def forward(self, g, inputs):
+        """ RGCN layer forward computation.
+
+        Parameters
+        ----------
+        g: DGLHeteroGraph
+            Input DGL heterogenous graph.
+        inputs: dict of Tensor
+            Node features for each node type in the format of {ntype: tensor}.
+
         Returns
         -------
-        dict[str, torch.Tensor]
-            New node features for each node type.
+        dict of Tensor: New node embeddings for each node type in the format of {ntype: tensor}.
         """
         g = g.local_var()
         if self.use_weight:
@@ -244,9 +253,10 @@ class RelGraphConvLayer(nn.Module):
         for k, _ in inputs.items():
             if g.number_of_dst_nodes(k) > 0:
                 if k not in hs:
-                    logging.warning("Warning. Graph convolution returned empty " + \
-                          f"dictionary for nodes in type: {str(k)}. Please check your data" + \
-                          f" for no in-degree nodes in type: {str(k)}.")
+                    warn_msg = "Warning. Graph convolution returned empty " \
+                        f"dictionary for nodes in type: {str(k)}. Please check your data" \
+                        f" for no in-degree nodes in type: {str(k)}."
+                    self.warning_once(warn_msg)
                     hs[k] = th.zeros((g.number_of_dst_nodes(k),
                                       self.out_feat),
                                      device=inputs[k].device)
@@ -254,34 +264,37 @@ class RelGraphConvLayer(nn.Module):
         return {ntype : _apply(ntype, h) for ntype, h in hs.items()}
 
 
-class RelationalGCNEncoder(GraphConvEncoder):
-    r""" Relational graph conv encoder.
+class RelationalGCNEncoder(GraphConvEncoder, GSgnnGNNEncoderInterface):
+    """ Relational graph conv encoder.
 
-    The RelationalGCNEncoder employs several RelGraphConvLayer as its encoding mechanism.
-    The RelationalGCNEncoder should be designated as the model's encoder within Graphstorm.
+    The ``RelationalGCNEncoder`` employs several ``RelGraphConvLayer`` as its encoding
+    mechanism. The ``RelationalGCNEncoder`` should be designated as the model's encoder
+    within Graphstorm.
 
     Parameters
     ----------
-    g : DistGraph
-        The distributed graph object.
-    h_dim : int
-        Hidden dimension
-    out_dim : int
-        Output dimension
+    g: DistGraph
+        The distributed graph.
+    h_dim: int
+        Hidden dimension.
+    out_dim: int
+        Output dimension.
     num_bases: int
-        Number of bases.
-    num_hidden_layers : int
-        Number of hidden layers. Total GNN layers is equal to num_hidden_layers + 1. Default 1
-    dropout : float
-        Dropout. Default 0.
-    use_self_loop : bool
-        Whether to add selfloop. Default True
-    last_layer_act : torch.function
-        Activation for the last layer. Default None
+        Number of bases. If is None, use number of relation types. Default: None.
+    num_hidden_layers: int
+        Number of hidden layers. Total GNN layers is equal to ``num_hidden_layers + 1``.
+        Default: 1.
+    dropout: float
+        Dropout rate. Default 0.
+    use_self_loop: bool
+        Whether to add selfloop. Default: True.
+    last_layer_act: callable
+        Activation for the last layer. Default: None.
     num_ffn_layers_in_gnn: int
-        Number of ngnn gnn layers between GNN layers
-    norm : str, optional
-        Normalization Method. Default: None
+        Number of fnn layers between GNN layers. Default: 0.
+    norm: str
+        Normalization methods. Options:``batch``, ``layer``, and ``None``. Default: None,
+        meaning no normalization.
 
     Examples:
     ----------
@@ -290,27 +303,26 @@ class RelationalGCNEncoder(GraphConvEncoder):
 
         # Build model and do full-graph inference on RelationalGCNEncoder
         from graphstorm import get_node_feat_size
-        from graphstorm.model.rgcn_encoder import RelationalGCNEncoder
-        from graphstorm.model.node_decoder import EntityClassifier
+        from graphstorm.model import RelationalGCNEncoder
+        from graphstorm.model import EntityClassifier
         from graphstorm.model import GSgnnNodeModel, GSNodeEncoderInputLayer
-        from graphstorm.dataloading import GSgnnNodeTrainData
+        from graphstorm.dataloading import GSgnnData
         from graphstorm.model import do_full_graph_inference
 
-        np_data = GSgnnNodeTrainData(...)
+        np_data = GSgnnData(...)
 
         model = GSgnnNodeModel(alpha_l2norm=0)
-        feat_size = get_node_feat_size(np_data.g, 'feat')
+        feat_size = get_node_feat_size(np_data.g, "feat")
         encoder = GSNodeEncoderInputLayer(g, feat_size, 4,
                                           dropout=0,
                                           use_node_embeddings=True)
         model.set_node_input_encoder(encoder)
 
         gnn_encoder = RelationalGCNEncoder(g, 4, 4,
-                                           num_heads=2,
                                            num_hidden_layers=1,
                                            dropout=0,
                                            use_self_loop=True,
-                                           norm=norm)
+                                           norm="batch")
         model.set_gnn_encoder(gnn_encoder)
         model.set_decoder(EntityClassifier(model.gnn_encoder.out_dims, 3, False))
 
@@ -345,21 +357,31 @@ class RelationalGCNEncoder(GraphConvEncoder):
             self.num_bases, activation=F.relu if last_layer_act else None,
             self_loop=use_self_loop, norm=norm if last_layer_act else None))
 
+    def skip_last_selfloop(self):
+        self.last_selfloop = self.layers[-1].self_loop
+        self.layers[-1].self_loop = False
+
+    def reset_last_selfloop(self):
+        self.layers[-1].self_loop = self.last_selfloop
+
     # TODO(zhengda) refactor this to support edge features.
     def forward(self, blocks, h):
-        """Forward computation
+        """ RGCN encoder forward computation.
 
         Parameters
         ----------
-        blocks: DGL MFGs
-            Sampled subgraph in DGL MFG
-        h: dict[str, torch.Tensor]
-            Input node feature for each node type.
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graphs (MFGs) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
+        h: dict of Tensor
+            Input node features for each node type in the format of {ntype: tensor}.
 
         Returns
         ----------
-        h: dict[str, torch.Tensor]
-            Output node feature for each node type.
+        h: dict of Tensor
+            New node embeddings for each node type in the format of {ntype: tensor}.
         """
         for layer, block in zip(self.layers, blocks):
             h = layer(block, h)
@@ -372,13 +394,13 @@ class HeteroGraphConv(nn.Module):
 
     Parameters
     ----------
-    mods : dict[str, nn.Module]
+    mods: dict[str, nn.Module]
         Modules associated with every edge types. The forward function of each
         module must have a `DGLGraph` object as the first argument, and
         its second argument is either a tensor object representing the node
         features or a pair of tensor object representing the source and destination
         node features.
-    aggregate : str, callable, optional
+    aggregate: str, callable, optional
         Method for aggregating node features generated by different relations.
         Allowed string values are 'sum', 'max', 'min', 'mean', 'stack'.
         The 'stack' aggregation is performed along the second dimension, whose order
@@ -388,7 +410,7 @@ class HeteroGraphConv(nn.Module):
 
     Attributes
     ----------
-    mods : dict[str, nn.Module]
+    mods: dict[str, nn.Module]
         Modules associated with every edge types.
     """
 
@@ -426,13 +448,13 @@ class HeteroGraphConv(nn.Module):
 
         Parameters
         ----------
-        g : DGLGraph
+        g: DGLGraph
             Graph data.
-        inputs : dict[str, Tensor] or pair of dict[str, Tensor]
+        inputs: dict[str, Tensor] or pair of dict[str, Tensor]
             Input node features.
-        mod_args : dict[str, tuple[any]], optional
+        mod_args: dict[str, tuple[any]], optional
             Extra positional arguments for the sub-modules.
-        mod_kwargs : dict[str, dict[str, any]], optional
+        mod_kwargs: dict[str, dict[str, any]], optional
             Extra key-word arguments for the sub-modules.
 
         Returns

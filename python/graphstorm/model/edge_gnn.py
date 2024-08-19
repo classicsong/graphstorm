@@ -30,77 +30,89 @@ from ..utils import barrier, is_distributed, get_rank, is_wholegraph
 class GSgnnEdgeModelInterface:
     """ The interface for GraphStorm edge prediction model.
 
-    This interface defines two main methods for training and inference.
+    This interface defines two main methods: ``forward()`` for training and ``predict()``
+    for inference. Edge GNN models should inherite this interface and implement the two
+    methods.
     """
     @abc.abstractmethod
     def forward(self, blocks, target_edges, node_feats, edge_feats,
                 target_edge_feats, labels, input_nodes=None):
         """ The forward function for edge prediction.
 
-        This method is used for training. It takes a mini-batch, including
-        the graph structure, node features, edge features and edge labels and
-        computes the loss of the model in the mini-batch.
+        This method is used for training. It takes a list of DGL message flow graphs (MFGs),
+        node features, edge features, and edge labels of a mini-batch as inputs, and
+        computes the loss of the model in the mini-batch as the return value. More
+        detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+        Overview
+        <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
 
         Parameters
         ----------
-        blocks : list of DGLBlock
-            The message passing graph for computing GNN embeddings.
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graph (MFG) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
         target_edges : a DGLGraph
-            The graph where we store target edges to run edge classification.
+            The graph that stores target edges to run edge prediction.
         node_feats : dict of Tensors
-            The input node features of the message passing graphs.
+            The input node features of the message passing graph.
         edge_feats : dict of Tensors
-            The input edge features of the message passing graphs.
+            The input edge features of the message passing graph.
         target_edge_feats: dict of Tensors
-            The edge features of target_edges
+            The edge features of target edges
         labels: dict of Tensor
-            The labels of the predicted edges.
+            The labels of the target edges.
         input_nodes: dict of Tensors
-            The input nodes of a mini-batch.
+            The input nodes of the mini-batch.
 
         Returns
         -------
-        The loss of prediction.
+        float: The loss of prediction of this mini-batch.
         """
 
     @abc.abstractmethod
     def predict(self, blocks, target_edges, node_feats, edge_feats,
                 target_edge_feats, input_nodes, return_proba):
-        """ Make prediction on the edges.
+        """ Make prediction on the target edges.
 
         Parameters
         ----------
-        blocks : list of DGLBlock
-            The message passing graph for computing GNN embeddings.
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graph (MFG) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
         target_edges : a DGLGraph
-            The graph where we store target edges to run edge classification.
+            The graph that stores target edges to run edge prediction.
         node_feats : dict of Tensors
-            The node features of the message passing graphs.
+            The node features of the message passing graph.
         edge_feats : dict of Tensors
-            The edge features of the message passing graphs.
+            The edge features of the message passing graph.
         target_edge_feats: dict of Tensors
-            The edge features of target_edges
+            The edge features of target edges.
         input_nodes: dict of Tensors
-            The input nodes of a mini-batch.
+            The input nodes of the mini-batch.
         return_proba : bool
-            Whether or not to return all the predicted results or only the maximum one
+            Whether to return the predicted results, or only return the argmaxed ones in
+            classification models.
 
         Returns
         -------
-        Tensor or dict of Tensor:
-            the prediction results. Return all the results when return_proba
-            is true otherwise return the maximum value.
+        Tensor, or dict of Tensor:
+            GNN prediction results. Return results of all dimensions when ``return_proba``
+            is True, otherwise return the argmaxed results.
         """
 
 # pylint: disable=abstract-method
-class GSgnnEdgeModelBase(GSgnnEdgeModelInterface,
-                         GSgnnModelBase):
-    """ The base class for edge-prediction GNN
+class GSgnnEdgeModelBase(GSgnnModelBase, GSgnnEdgeModelInterface):
+    """ GraphStorm GNN model base class for edge prediction tasks.
 
-    When a user wants to define an edge prediction GNN model and train the model
-    in GraphStorm, the model class needs to inherit from this base class.
-    A user needs to implement some basic methods including `forward`, `predict`,
-    `save_model`, `restore_model` and `create_optimizer`.
+    This base class extends GraphStorm ``GSgnnModelBase`` and ``GSgnnEdgeModelInterface``.
+    When users want to define a customized edge prediction GNN model and train the model
+    in GraphStorm, the model class needs to inherit from this base class, and implement
+    the required methods including ``forward()``, ``predict()``, ``save_model()``,
+    ``restore_model()`` and ``create_optimizer()``.
     """
 
 class GSgnnEdgeModel(GSgnnModel, GSgnnEdgeModelInterface):
@@ -215,25 +227,27 @@ def edge_mini_batch_gnn_predict(model, loader, return_proba=True, return_label=F
                 if not isinstance(input_nodes, dict):
                     assert len(g.ntypes) == 1
                     input_nodes = {g.ntypes[0]: input_nodes}
-                if data.decoder_edge_feat is not None:
+                if loader.decoder_edge_feat_fields is not None:
                     input_edges = {etype: target_edge_graph.edges[etype].data[dgl.EID] \
                         for etype in target_edge_graph.canonical_etypes}
             if is_wholegraph():
                 tmp_node_keys = [ntype for ntype in g.ntypes if ntype not in input_nodes]
-                if data.decoder_edge_feat is not None:
+                if loader.decoder_edge_feat_fields is not None:
                     tmp_edge_keys = [etype for etype in g.canonical_etypes \
                         if etype not in input_edges]
                 prepare_for_wholegraph(g, input_nodes, input_edges)
-            input_feats = data.get_node_feats(input_nodes, device)
+            nfeat_fields = loader.node_feat_fields
+            input_feats = data.get_node_feats(input_nodes, nfeat_fields, device)
             if blocks is None:
                 continue
             # Remove additional keys (ntypes) added for WholeGraph compatibility
             for ntype in tmp_node_keys:
                 del input_nodes[ntype]
-            if data.decoder_edge_feat is not None:
-                edge_decoder_feats = data.get_edge_feats(input_edges,
-                                                         data.decoder_edge_feat,
-                                                         device)
+            if loader.decoder_edge_feat_fields is not None:
+                edge_decoder_feats = \
+                    data.get_edge_feats(input_edges,
+                                        loader.decoder_edge_feat_fields,
+                                        device)
                 # Remove additional keys (etypes) added for WholeGraph compatibility
                 for etype in tmp_edge_keys:
                     del input_edges[etype]
@@ -257,7 +271,8 @@ def edge_mini_batch_gnn_predict(model, loader, return_proba=True, return_label=F
                 # retrieving seed edge id from the graph to find labels
                 # TODO(zhengda) the data loader should return labels directly.
                 seeds = target_edge_graph.edges[target_etype].data[dgl.EID]
-                lbl = data.get_labels({target_etype: seeds})
+                label_field = loader.label_field
+                lbl = data.get_edge_feats({target_etype: seeds}, label_field)
                 assert len(lbl) == 1
                 append_to_dict(lbl, labels)
             if isinstance(pred, dict):
@@ -308,15 +323,57 @@ def edge_mini_batch_predict(model, emb, loader, return_proba=True, return_label=
     model.eval()
     decoder = model.decoder
     device = model.device
+
+    preds, labels = run_edge_mini_batch_predict(decoder,
+                                                emb,
+                                                loader,
+                                                device,
+                                                return_proba,
+                                                return_label)
+    model.train()
+    return preds, labels
+
+def run_edge_mini_batch_predict(decoder, emb, loader, device,
+                                return_proba=True, return_label=False):
+    """ Perform mini-batch edge prediction with the given decoder.
+
+    This function usually follows full-graph GNN embedding inference. After having
+    the GNN embeddings, we need to perform mini-batch computation to make predictions
+    on the GNN embeddings.
+
+    Note: callers should call model.eval() before calling this function
+    and call model.train() after when doing training.
+
+    Parameters
+    ----------
+    decoder : GSEdgeDecoder
+        The GraphStorm edge decoder
+    emb : dict of Tensor
+        The GNN embeddings
+    loader : GSgnnEdgeDataLoader
+        The GraphStorm dataloader
+    device: th.device
+        Device used to compute prediction result
+    return_proba: bool
+        Whether to return all the predictions or the maximum prediction
+    return_label : bool
+        Whether or not to return labels
+
+    Returns
+    -------
+    dict of Tensor : GNN prediction results. Return all the results when return_proba is true
+        otherwise return the maximum result.
+    dict of Tensor : labels if return_labels is True
+    """
     data = loader.data
     g = data.g
     preds = {}
     labels = {}
 
     if return_label:
-        assert data.labels is not None, \
-            "Return label is required, but the label field is not provided whem" \
-            "initlaizing the inference dataset."
+        assert loader.label_field is not None, \
+            "Return label is required, but the label field is not provided when" \
+            "initlaizing the inference dataloader."
 
     len_dataloader = max_num_batch = len(loader)
     num_batch = th.tensor([len_dataloader], device=device)
@@ -330,14 +387,14 @@ def edge_mini_batch_predict(model, emb, loader, return_proba=True, return_label=
         # the order when gather tensors from other trainers
         for iter_l in range(max_num_batch):
             tmp_edge_keys = []
-            input_edges = {} if data.decoder_edge_feat is not None else None
+            input_edges = {} if loader.decoder_edge_feat_fields is not None else None
             # TODO suppport multiple target edge types
             if iter_l < len_dataloader:
                 input_nodes, target_edge_graph, _ = next(dataloader_iter)
-                if data.decoder_edge_feat is not None:
+                if loader.decoder_edge_feat_fields is not None:
                     input_edges = {etype: target_edge_graph.edges[etype].data[dgl.EID] \
                         for etype in target_edge_graph.canonical_etypes}
-            if is_wholegraph() and data.decoder_edge_feat is not None:
+            if is_wholegraph() and loader.decoder_edge_feat_fields is not None:
                 tmp_edge_keys = [etype for etype in g.canonical_etypes \
                     if etype not in input_edges]
                 prepare_for_wholegraph(g, None, input_edges)
@@ -347,9 +404,9 @@ def edge_mini_batch_predict(model, emb, loader, return_proba=True, return_label=
             for ntype, in_nodes in input_nodes.items():
                 batch_embs[ntype] = emb[ntype][in_nodes].to(device)
             target_edge_graph = target_edge_graph.to(device)
-            if data.decoder_edge_feat is not None:
+            if loader.decoder_edge_feat_fields is not None:
                 edge_decoder_feats = data.get_edge_feats(input_edges,
-                                                         data.decoder_edge_feat,
+                                                         loader.decoder_edge_feat_fields,
                                                          target_edge_graph.device)
                 # Remove additional keys (etypes) added for WholeGraph compatibility
                 for etype in tmp_edge_keys:
@@ -368,12 +425,14 @@ def edge_mini_batch_predict(model, emb, loader, return_proba=True, return_label=
             # TODO(zhengda) we need to have the data loader reads everything,
             # instead of reading labels here.
             if return_label:
-                lbl = data.get_labels(
-                    {target_etype: target_edge_graph.edges[target_etype].data[dgl.EID]})
+                label_field = loader.label_field
+                lbl = data.get_edge_feats(
+                    {target_etype: target_edge_graph.edges[target_etype].data[dgl.EID]},
+                    label_field)
+
                 append_to_dict(lbl, labels)
     barrier()
 
-    model.train()
     for target_etype, pred in preds.items():
         preds[target_etype] = th.cat(pred)
     if return_label:

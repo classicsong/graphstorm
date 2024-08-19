@@ -24,46 +24,53 @@ from ..eval.utils import calc_ranking
 class GSgnnLinkPredictionModelInterface:
     """ The interface for GraphStorm link prediction model.
 
-    This interface defines two main methods for training and inference.
+    This interface defines one method: ``forward()`` for training. Link prediction models
+    should inherite this interface and implement this method.
     """
     @abc.abstractmethod
     def forward(self, blocks, pos_graph, neg_graph,
         node_feats, edge_feats, pos_edge_feats=None, neg_edge_feats=None, input_nodes=None):
         """ The forward function for link prediction.
 
-        This method is used for training. It takes a mini-batch, including
-        the graph structure, node features and edge features and
-        computes the loss of the model in the mini-batch.
+        This method is used for training. It takes a list of DGL message flow graphs (MFGs),
+        node features, and edge features of a mini-batch as inputs, and
+        computes the loss of the model in the mini-batch as the return value. More
+        detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+        Overview
+        <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
 
         Parameters
         ----------
-        blocks : list of DGLBlock
-            The message passing graph for computing GNN embeddings.
+        blocks: list of DGL MFGs
+            Sampled subgraph in the list of DGL message flow graph (MFG) format. More
+            detailed information about DGL MFG can be found in `DGL Neighbor Sampling
+            Overview
+            <https://docs.dgl.ai/stochastic_training/neighbor_sampling_overview.html>`_.
         pos_graph : a DGLGraph
             The graph that contains the positive edges.
         neg_graph : a DGLGraph
             The graph that contains the negative edges.
         node_feats : dict of Tensors
-            The input node features of the message passing graphs.
+            The input node features of the message passing graph.
         edge_feats : dict of Tensors
-            The input edge features of the message passing graphs.
+            The input edge features of the message passing graph.
         input_nodes: dict of Tensors
             The input nodes of a mini-batch.
 
         Returns
         -------
-        The loss of prediction.
+        float: The loss of prediction of this mini-batch.
         """
 
 # pylint: disable=abstract-method
-class GSgnnLinkPredictionModelBase(GSgnnLinkPredictionModelInterface,
-                                   GSgnnModelBase):
-    """ The base class for link-prediction GNN
+class GSgnnLinkPredictionModelBase(GSgnnModelBase, GSgnnLinkPredictionModelInterface):
+    """ GraphStorm GNN model base class for link-prediction tasks.
 
-    When a user wants to define a link prediction GNN model and train the model
-    in GraphStorm, the model class needs to inherit from this base class.
-    A user needs to implement some basic methods including `forward`, `predict`,
-    `save_model`, `restore_model` and `create_optimizer`.
+    This base class extends GraphStorm ``GSgnnModelBase`` and
+    ``GSgnnLinkPredictionModelInterface``. When users want to define a customized link
+    prediction GNN model and train the model in GraphStorm, the model class needs to
+    inherit from this base class, and implement the required methods including ``forward()``,
+    ``predict()``, ``save_model()``, ``restore_model()`` and ``create_optimizer()``.
     """
 
     def normalize_node_embs(self, embs):
@@ -133,9 +140,12 @@ class GSgnnLinkPredictionModel(GSgnnModel, GSgnnLinkPredictionModelInterface):
 def lp_mini_batch_predict(model, emb, loader, device):
     """ Perform mini-batch prediction.
 
-        This function follows full-grain GNN embedding inference.
+        This function follows full-graph GNN embedding inference.
         After having the GNN embeddings, we need to perform mini-batch
         computation to make predictions on the GNN embeddings.
+
+        Note: callers should call model.eval() before calling this function
+        and call model.train() after when doing training.
 
         Parameters
         ----------
@@ -154,6 +164,37 @@ def lp_mini_batch_predict(model, emb, loader, device):
             Rankings of positive scores in format of {etype: ranking}
     """
     decoder = model.decoder
+    return run_lp_mini_batch_predict(decoder,
+                                     emb,
+                                     loader,
+                                     device)
+
+def run_lp_mini_batch_predict(decoder, emb, loader, device):
+    """ Perform mini-batch link prediction with the given decoder.
+
+        This function follows full-graph GNN embedding inference.
+        After having the GNN embeddings, we need to perform mini-batch
+        computation to make predictions on the GNN embeddings.
+
+        Note: callers should call model.eval() before calling this function
+        and call model.train() after when doing training.
+
+        Parameters
+        ----------
+        decoder : LinkPredictNoParamDecoder or LinkPredictLearnableDecoder
+            The GraphStorm link prediction decoder model
+        emb : dict of Tensor
+            The GNN embeddings
+        loader : GSgnnEdgeDataLoader
+            The GraphStorm dataloader
+        device: th.device
+            Device used to compute test scores
+
+        Returns
+        -------
+        rankings: dict of tensors
+            Rankings of positive scores in format of {etype: ranking}
+    """
     with th.no_grad():
         ranking = {}
         for pos_neg_tuple, neg_sample_type in loader:

@@ -16,12 +16,14 @@
     Graphstorm package.
 """
 #!/usr/bin/env python
-
+import os
 import pandas
 import numpy as np
 import h5py
 import pyarrow.parquet as pq
 import pyarrow as pa
+
+from graphstorm.gconstruct.id_map import IdMap
 
 # process user data
 user = pandas.read_csv('/data/ml-100k/u.user', delimiter='|', header=None,
@@ -42,6 +44,7 @@ for x, y in zip(np.arange(len(occupation)), occupation):
     occ_one_hot[x,y] = 1
 
 feat = np.concatenate([age, gender, occ_one_hot], axis=1)
+num_users = feat.shape[0]
 
 with h5py.File("/data/ml-100k/user.hdf5", "w") as f:
     ids = user['id']
@@ -67,6 +70,14 @@ for i in range(labels.shape[0]):
 labels = np.array(label_list)
 ids = np.array(movie[0])
 
+user_ids = np.arange(num_users).astype(str)
+user_id_map = IdMap(user_ids)
+map_prefix = os.path.join("/data/ml-100k/", "raw_id_mappings", "user")
+user_id_map.save(map_prefix)
+movie_id_map = IdMap(ids.astype(str))
+map_prefix = os.path.join("/data/ml-100k/", "raw_id_mappings", "movie")
+movie_id_map.save(map_prefix)
+
 def write_data_parquet(data, data_file):
     arr_dict = {}
     for key in data:
@@ -83,13 +94,19 @@ def write_data_parquet(data, data_file):
 user_data = {'id': user['id'], 'feat': feat, 'occupation': user['occupation']}
 write_data_parquet(user_data, '/data/ml-100k/users.parquet')
 
-movie_data = {'id': ids, 'label': labels, 'title': title}
+movie_data = {'id': ids,
+              'title': title,
+              'label': labels,
+              'label2': labels } # label2 for multi-task learning test
 write_data_parquet(movie_data, '/data/ml-100k/movie.parquet')
 
 # process edges
 edges = pandas.read_csv('/data/ml-100k/u.data', delimiter='\t', header=None)
 # Set the rate to start from 0 to fit evaluation metrics, e.g., roc_auc or p_r
-edge_data = {'src_id': edges[0], 'dst_id': edges[1], 'rate': edges[2]-1}
+edge_data = {'src_id': edges[0],
+             'dst_id': edges[1],
+             'rate': edges[2]-1,
+             'rate_class': edges[2]} # rate_class for multi-task learning test
 write_data_parquet(edge_data, '/data/ml-100k/edges.parquet')
 
 # generate data for homogeneous optimization test

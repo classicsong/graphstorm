@@ -5,8 +5,8 @@ from graphstorm.config import get_argument_parser
 from graphstorm.config import GSConfig
 from graphstorm.dataloading import GSgnnLinkPredictionDataLoader, GSgnnLinkPredictionTestDataLoader
 from graphstorm.eval import GSgnnMrrLPEvaluator
-from graphstorm.dataloading import GSgnnLPTrainData
-from graphstorm.utils import setup_device
+from graphstorm.dataloading import GSgnnData
+from graphstorm.utils import get_device
 from graphstorm.inference import GSgnnLinkPredictionInferrer
 from graphstorm.trainer import GSgnnLinkPredictionTrainer
 from graphstorm.tracker import GSSageMakerTaskTracker
@@ -17,17 +17,15 @@ def main(config_args):
     """ main function
     """
     config = GSConfig(config_args)
-    gs.initialize(ip_config=config.ip_config, backend=config.backend)
-    device = setup_device(config.local_rank)
+    gs.initialize(ip_config=config.ip_config, backend=config.backend,
+                  local_rank=config.local_rank)
     # Define the training dataset
-    train_data = GSgnnLPTrainData(
-        config.graph_name,
+    train_data = GSgnnData(
         config.part_config,
-        train_etypes=config.train_etype,
-        eval_etypes=config.eval_etype,
-        label_field=None,
         node_feat_field=config.node_feat_name,
     )
+    train_etypes=config.train_etype
+    eval_etypes=config.eval_etype
 
     model = GNNLLM_LP(
             g=train_data.g,
@@ -51,42 +49,43 @@ def main(config_args):
             model_layer_to_load=["gnn", "embed"],
         )
 
-    trainer.setup_device(device=device)
+    trainer.setup_device(device=get_device())
 
     # set evaluator
-    evaluator = GSgnnMrrLPEvaluator(config.eval_frequency,
-        train_data,
-        config.num_negative_edges_eval,
-        config.lp_decoder_type,
-        config.use_early_stop,
-        config.early_stop_burnin_rounds,
-        config.early_stop_rounds,
-        config.early_stop_strategy
+    evaluator = GSgnnMrrLPEvaluator(
+        eval_frequency=config.eval_frequency,
+        use_early_stop=config.use_early_stop,
+        early_stop_burnin_rounds=config.early_stop_burnin_rounds,
+        early_stop_rounds=config.early_stop_rounds,
+        early_stop_strategy=config.early_stop_strategy
     )
     # disbale validation for efficiency
     # trainer.setup_evaluator(evaluator)
     tracker = GSSageMakerTaskTracker(config.eval_frequency)
     trainer.setup_task_tracker(tracker)
-    
+
     # create train loader with uniform negative sampling
+    train_idxs = train_data.get_edge_train_set(train_etypes)
     dataloader = GSgnnLinkPredictionDataLoader(
         train_data,
-        train_data.train_idxs,
+        train_idxs,
         fanout=config.fanout,
         batch_size=config.batch_size,
         num_negative_edges=config.num_negative_edges,
-        device=device,
+        node_feats=config.node_feat_name,
         train_task=True,
         reverse_edge_types_map=config.reverse_edge_types_map,
         exclude_training_targets=config.exclude_training_targets,
     )
 
     # create val loader
+    val_idxs = train_data.get_edge_val_set(eval_etypes)
     val_dataloader = GSgnnLinkPredictionTestDataLoader(
         train_data,
-        train_data.val_idxs,
+        val_idxs,
         batch_size=config.eval_batch_size,
         num_negative_edges=config.num_negative_edges,
+        node_feats=config.node_feat_name,
         fanout=config.fanout,
     )
 
@@ -102,22 +101,24 @@ def main(config_args):
         save_model_frequency=config.save_model_frequency,
         use_mini_batch_infer=True
     )
-    
+
     # Load the best checkpoint
     best_model_path = trainer.get_best_model_path()
     model.restore_model(best_model_path)
 
     # Create an inference for a node task.
     infer = GSgnnLinkPredictionInferrer(model)
-    infer.setup_device(device=device)
+    infer.setup_device(device=get_device())
     infer.setup_evaluator(evaluator)
     infer.setup_task_tracker(tracker)
     # Create test loader
+    infer_idxs = train_data.get_edge_infer_set(eval_etypes)
     test_dataloader = GSgnnLinkPredictionTestDataLoader(
         train_data,
-        train_data.test_idxs,
+        infer_idxs,
         batch_size=config.eval_batch_size,
         num_negative_edges=config.num_negative_edges_eval,
+        node_feats=config.node_feat_name,
         fanout=config.fanout,
     )
     # Run inference on the inference dataset and save the GNN embeddings in the specified path.

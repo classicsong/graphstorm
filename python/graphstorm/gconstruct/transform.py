@@ -31,7 +31,7 @@ from scipy.special import erfinv # pylint: disable=no-name-in-module
 from transformers import AutoTokenizer
 from transformers import AutoModel, AutoConfig
 
-from .file_io import read_index_json
+from .file_io import read_index
 from .utils import ExtMemArrayWrapper, ExtFeatureWrapper, generate_hash
 
 LABEL_STATS_FIELD = "training_label_stats"
@@ -361,9 +361,9 @@ class BucketTransform(FeatTransform):
     def __init__(self, col_name, feat_name, bucket_cnt,
                  bucket_range, slide_window_size=0, out_dtype=None):
         assert bucket_cnt is not None, \
-            "bucket count must be provided for bucket feature transform"
+            f"bucket count must be provided for bucket feature transform of feature {feat_name}"
         assert bucket_range is not None and len(bucket_range) == 2, \
-            "bucket range must be provided for bucket feature transform"
+            f"bucket range must be provided for bucket feature transform of feature {feat_name}"
         self.bucket_cnt = bucket_cnt
         self.bucket_range = bucket_range
         self.slide_window_size = slide_window_size
@@ -452,7 +452,8 @@ class CategoricalTransform(TwoPhaseFeatTransform):
             return {}
 
         assert isinstance(feats, (np.ndarray, ExtMemArrayWrapper)), \
-            "Feature of CategoricalTransform must be numpy array or ExtMemArray"
+            f"Feature of CategoricalTransform must be a numpy " \
+            f"array or ExtMemArray for feature {self.feat_name}"
         if isinstance(feats, ExtMemArrayWrapper):
             # TODO(xiangsx): This is not memory efficient.
             # It will load all data into main memory.
@@ -463,12 +464,12 @@ class CategoricalTransform(TwoPhaseFeatTransform):
             return {self.feat_name: np.unique(feats.astype(str))}
         else:
             assert feats.dtype.type is np.str_, \
-                    "We can only convert strings to multiple categorical values with separaters."
+                "We can only convert strings to multiple categorical values with separaters." \
+                f"for feature {self.feat_name}"
             vals = []
             for feat in feats:
                 vals.extend(feat.split(self._separator))
             return {self.feat_name: np.unique(vals)}
-
 
     def update_info(self, info):
         # We already have the mapping.
@@ -550,14 +551,15 @@ class NumericalMinMaxTransform(TwoPhaseFeatTransform):
             fifo = np.finfo(out_dtype)
         else:
             fifo = np.finfo(np.float32)
-        self._max_bound = fifo.max if max_bound>=fifo.max else max_bound
-        self._min_bound = -fifo.max if min_bound<=-fifo.max else min_bound
+        self._max_bound = fifo.max if max_bound >= fifo.max else max_bound
+        self._min_bound = -fifo.max if min_bound <= -fifo.max else min_bound
         out_dtype = np.float32 if out_dtype is None else out_dtype
         super(NumericalMinMaxTransform, self).__init__(col_name, feat_name, out_dtype)
 
     def pre_process(self, feats):
         assert isinstance(feats, (np.ndarray, ExtMemArrayWrapper)), \
-            "Feature of NumericalMinMaxTransform must be numpy array or ExtMemArray"
+            f"Feature {self.feat_name} of NumericalMinMaxTransform " \
+            "must be numpy array or ExtMemArray"
 
         # The max and min of $val = (val-min) / (max-min)$ is pre-defined
         # in the transform_conf, return max_val and min_val directly
@@ -580,7 +582,9 @@ class NumericalMinMaxTransform(TwoPhaseFeatTransform):
                 feats = feats.astype(np.float32)
             except: # pylint: disable=bare-except
                 raise ValueError(f"The feature {self.feat_name} has to be integers or floats.")
-        assert len(feats.shape) <= 2, "Only support 1D fp feature or 2D fp feature"
+        assert len(feats.shape) <= 2, \
+            "Only support 1D fp feature or 2D fp feature, " \
+            f"but get {len(feats.shape)}D feature for {self.feat_name}"
 
         if self._max_val is None:
             max_val = np.amax(feats, axis=0) if len(feats.shape) == 2 \
@@ -633,11 +637,13 @@ class NumericalMinMaxTransform(TwoPhaseFeatTransform):
         np.array
         """
         assert isinstance(feats, (np.ndarray, ExtMemArrayWrapper)), \
-            "Feature of NumericalMinMaxTransform must be numpy array or ExtMemArray"
+            f"Feature {self._feat_name} of NumericalMinMaxTransform " \
+            "must be numpy array or ExtMemArray"
 
         assert not np.any(self._max_val == self._min_val), \
             f"At least one element of Max Val {self._max_val} " \
-            f"and Min Val {self._min_val} is equal. This will cause divide by zero error"
+            f"and Min Val {self._min_val} is equal for feature {self.feat_name}. " \
+            "This will cause divide-by-zero error"
 
         if isinstance(feats, ExtMemArrayWrapper):
             # TODO(xiangsx): This is not memory efficient.
@@ -676,9 +682,16 @@ class RankGaussTransform(GlobalProcessFeatTransform):
         Default: None, we will not do data type casting.
     epsilon: float
         Epsilon for normalization.
+    uniquify: bool
+        When uniquify is set to True, GraphStorm will
+        deduplicate the input features before computing the
+        rank gauss norm on the input features.
+        Note: Set it to True will make feature processing slower.
+        Default: False.
     """
-    def __init__(self, col_name, feat_name, out_dtype=None, epsilon=None):
+    def __init__(self, col_name, feat_name, out_dtype=None, epsilon=None, uniquify=False):
         self._epsilon = epsilon if epsilon is not None else 1e-6
+        self._uniquify = uniquify
         out_dtype = np.float32 if out_dtype is None else out_dtype
         super(RankGaussTransform, self).__init__(col_name, feat_name, out_dtype)
 
@@ -714,12 +727,28 @@ class RankGaussTransform(GlobalProcessFeatTransform):
         # Get ranking information.
         if isinstance(feats, ExtMemArrayWrapper):
             feats = feats.to_numpy()
-        feats = feats.argsort(axis=0).argsort(axis=0)
-        feat_range = len(feats) - 1
-        # norm to [-1, 1]
-        feats = (feats / feat_range - 0.5) * 2
-        feats = np.clip(feats, -1 + self._epsilon, 1 - self._epsilon)
-        feats = erfinv(feats)
+
+        if self._uniquify:
+            uni_feats, indices = np.unique(feats, axis=0, return_inverse=True)
+
+            uni_feats = uni_feats.argsort(axis=0).argsort(axis=0)
+            if len(uni_feats) == 1:
+                logging.warning("features of %s are identical. Will return all 0s",
+                                self.feat_name)
+                return self.as_out_dtype(np.zeros(feats.shape))
+
+            feat_range = len(uni_feats) - 1
+            uni_feats = (uni_feats / feat_range - 0.5) * 2
+            uni_feats = np.clip(uni_feats, -1 + self._epsilon, 1 - self._epsilon)
+            uni_feats = erfinv(uni_feats)
+            feats = uni_feats[indices]
+        else:
+            feats = feats.argsort(axis=0).argsort(axis=0)
+            feat_range = len(feats) - 1
+            # norm to [-1, 1]
+            feats = (feats / feat_range - 0.5) * 2
+            feats = np.clip(feats, -1 + self._epsilon, 1 - self._epsilon)
+            feats = erfinv(feats)
 
         return self.as_out_dtype(feats)
 
@@ -761,7 +790,8 @@ class Tokenizer(FeatTransform):
         att_masks = []
         type_ids = []
         for s in strs:
-            assert isinstance(s, str), "The input of the tokenizer has to be a string."
+            assert isinstance(s, str), \
+                "The input of the tokenizer has to be a string for feature {self.feat_name}."
             t = self.tokenizer(s, max_length=self.max_seq_length,
                                truncation=True, padding='max_length', return_tensors='pt')
             tokens.append(t['input_ids'])
@@ -886,13 +916,18 @@ class Noop(FeatTransform):
         The name of the column that contains the feature.
     feat_name : str
         The feature name used in the constructed graph.
-    out_dtype:
+    out_dtype : str
         The dtype of the transformed feature.
         Default: None, we will not do data type casting.
+    truncate_dim : int
+        When provided, will truncate the output float-vector feature to the specified dimension.
+        This is useful when the feature is a multi-dimensional vector and we only need
+        a subset of the dimensions, e.g. for Matryoshka Representation Learning embeddings.
     """
-    def __init__(self, col_name, feat_name, out_dtype=None):
+    def __init__(self, col_name, feat_name, out_dtype=None, truncate_dim=None):
         out_dtype = np.float32 if out_dtype is None else out_dtype
         super(Noop, self).__init__(col_name, feat_name, out_dtype)
+        self.truncate_dim = truncate_dim
 
     def call(self, feats):
         """ This transforms the features.
@@ -911,6 +946,13 @@ class Noop(FeatTransform):
         assert np.issubdtype(feats.dtype, np.integer) \
                 or np.issubdtype(feats.dtype, np.floating), \
                 f"The feature {self.feat_name} has to be integers or floats."
+        if self.truncate_dim is not None:
+            if isinstance(feats, np.ndarray):
+                feats = feats[:, :self.truncate_dim]
+            else:
+                assert isinstance(feats, ExtMemArrayWrapper)
+                # Need to convert to in-memory array to make truncation possible
+                feats = feats.to_numpy()[:, :self.truncate_dim]
         return {self.feat_name: feats}
 
 class HardEdgeNegativeTransform(TwoPhaseFeatTransform):
@@ -982,7 +1024,8 @@ class HardEdgeNegativeTransform(TwoPhaseFeatTransform):
             dict: {feature_name: feats_statistics}
         """
         assert isinstance(feats, (np.ndarray, ExtMemArrayWrapper)), \
-            "Feature of HardEdgeNegativeTransform must be numpy array or ExtMemArray"
+            f"Feature {self.feat_name} of HardEdgeNegativeTransform " \
+            "must be numpy array or ExtMemArray"
 
         if self._separator is None:
             # It is possible that the input is a
@@ -994,7 +1037,8 @@ class HardEdgeNegativeTransform(TwoPhaseFeatTransform):
                 max_dim = feats.shape[1]
         else:
             assert len(feats.shape) == 1 or feats.shape[1] == 1, \
-                "When a separator is given, the input feats must be a list of strings."
+                "When a separator is given, the input feats " \
+                f"of {self.feat_name} must be a list of strings."
 
             feats = feats.astype(str)
             max_dim = 0
@@ -1116,7 +1160,12 @@ def parse_feat_ops(confs, input_data_format=None):
 
         out_dtype = _get_output_dtype(feat['out_dtype']) if 'out_dtype' in feat else None
         if 'transform' not in feat:
-            transform = Noop(feat['feature_col'], feat_name, out_dtype=out_dtype)
+            transform = Noop(
+                feat['feature_col'],
+                feat_name,
+                out_dtype=out_dtype,
+                truncate_dim=feat.get('truncate_dim', None)
+            )
         else:
             conf = feat['transform']
             assert 'name' in conf, "'name' must be defined in the transformation field."
@@ -1165,10 +1214,12 @@ def parse_feat_ops(confs, input_data_format=None):
                                                      out_dtype=out_dtype, transform_conf=conf)
             elif conf['name'] == 'rank_gauss':
                 epsilon = conf['epsilon'] if 'epsilon' in conf else None
+                uniquify = conf['uniquify'] if 'uniquify' in conf else False
                 transform = RankGaussTransform(feat['feature_col'],
                                                feat_name,
                                                out_dtype=out_dtype,
-                                               epsilon=epsilon)
+                                               epsilon=epsilon,
+                                               uniquify=uniquify)
             elif conf['name'] == 'to_categorical':
                 separator = conf['separator'] if 'separator' in conf else None
                 # TODO: Not support categorical feature transformation on multiple columns.
@@ -1368,7 +1419,7 @@ class CustomLabelProcessor:
         The column name for labels.
     label_name : str
         The label name.
-    id_col : str
+    id_col : str or tuple
         The name of the ID column.
     task_type : str
         The task type.
@@ -1380,18 +1431,27 @@ class CustomLabelProcessor:
         The array that contains the index of test data points.
     stats_type: str
         Speicfy how to summarize label statistics
+    mask_field_names: tuple of str
+        Field name of train, validation and test masks
+        Default: ("train_mask", "val_mask", "test_mask")
     """
     def __init__(self, col_name, label_name, id_col, task_type,
                  train_idx=None, val_idx=None, test_idx=None,
-                 stats_type=None):
+                 stats_type=None, mask_field_names=("train_mask", "val_mask", "test_mask")):
         self._id_col = id_col
         self._col_name = col_name
         self._label_name = label_name
-        self._train_idx = set(train_idx.tolist()) if train_idx is not None else None
-        self._val_idx = set(val_idx.tolist()) if val_idx is not None else None
-        self._test_idx = set(test_idx.tolist()) if test_idx is not None else None
+        self._train_idx = set(train_idx) if train_idx is not None else None
+        self._val_idx = set(val_idx) if val_idx is not None else None
+        self._test_idx = set(test_idx) if test_idx is not None else None
         self._task_type = task_type
         self._stats_type = stats_type
+
+        assert isinstance(mask_field_names, tuple) and len(mask_field_names) == 3, \
+            "mask_field_names must be a tuple with three strings " \
+            "for training mask, validation mask and test mask, respectively." \
+            "For example ('tmask', 'vmask', 'tmask')."
+        self._mask_field_names = mask_field_names
 
     @property
     def col_name(self):
@@ -1404,6 +1464,24 @@ class CustomLabelProcessor:
         """ The label name.
         """
         return self._label_name
+
+    @property
+    def train_mask_name(self):
+        """ The field name of the train mask
+        """
+        return self._mask_field_names[0]
+
+    @property
+    def val_mask_name(self):
+        """ The field name of the validation mask
+        """
+        return self._mask_field_names[1]
+
+    @property
+    def test_mask_name(self):
+        """ The field name of the test mask
+        """
+        return self._mask_field_names[2]
 
     def data_split(self, ids):
         """ Split the data for training/validation/test.
@@ -1429,9 +1507,9 @@ class CustomLabelProcessor:
                 val_mask[i] = 1
             elif self._test_idx is not None and idx in self._test_idx:
                 test_mask[i] = 1
-        train_mask_name = 'train_mask'
-        val_mask_name = 'val_mask'
-        test_mask_name = 'test_mask'
+        train_mask_name = self.train_mask_name # default: 'train_mask'
+        val_mask_name = self.val_mask_name # default: 'val_mask'
+        test_mask_name = self.test_mask_name # default: 'test_mask'
         return {train_mask_name: train_mask,
                 val_mask_name: val_mask,
                 test_mask_name: test_mask}
@@ -1451,16 +1529,26 @@ class CustomLabelProcessor:
         dict of Tensors : it contains the labels as well as training/val/test splits.
         """
         label = data[self.col_name] if self.col_name in data else None
-        assert self._id_col in data, \
-                f"The input data does not have ID column {self._id_col}."
-        res = self.data_split(data[self._id_col])
+        if isinstance(self._id_col, str):
+            # For node label, the id_col is expected to be one single column
+            assert self._id_col in data, \
+                    f"The input data does not have ID column {self._id_col}."
+        else:
+            # For edge label, the id_col is expected a be a pair of (src_id_col, dest_id_col)
+            assert self._id_col[0] and self._id_col[1] in data,\
+                f"The input data does not have ID column {self._id_col[0]} and {self._id_col[1]}"
+
+        if isinstance(self._id_col, str):
+            res = self.data_split(data[self._id_col])
+        else:
+            res = self.data_split(list(zip(data[self._id_col[0]], data[self._id_col[1]])))
         if label is not None and self._task_type == "classification":
             res[self.label_name] = np.int32(label)
             if self._stats_type is not None:
                 if self._stats_type == LABEL_STATS_FREQUENCY_COUNT:
                     # get train labels
                     train_labels = res[self.label_name][ \
-                        res['train_mask'].astype(np.bool_)]
+                        res[self.train_mask_name].astype(np.bool_)]
                     vals, counts = np.unique(train_labels, return_counts=True)
                     res[LABEL_STATS_FIELD+self.label_name] = \
                         (LABEL_STATS_FREQUENCY_COUNT, vals, counts)
@@ -1481,12 +1569,22 @@ class LabelProcessor:
         The percentage of training, validation and test.
     stats_type: str
         Speicfy how to summarize label statistics
+        Default: None
+    mask_field_names: tuple of str
+        Specify the field name of train, validation and test masks
+        Default: ["train_mask", "val_mask", "test_mask"]
     """
-    def __init__(self, col_name, label_name, split_pct, stats_type=None):
+    def __init__(self, col_name, label_name, split_pct,
+                 stats_type=None, mask_field_names=("train_mask", "val_mask", "test_mask")):
         self._col_name = col_name
         self._label_name = label_name
         self._split_pct = split_pct
         self._stats_type = stats_type
+        assert isinstance(mask_field_names, tuple) and len(mask_field_names) == 3, \
+            "mask_field_names must be a tuple with three strings " \
+            "for training mask, validation mask and test mask, respectively." \
+            "For example ('tmask', 'vmask', 'tmask')."
+        self._mask_field_names = mask_field_names
 
     @property
     def col_name(self):
@@ -1499,6 +1597,30 @@ class LabelProcessor:
         """ The label name.
         """
         return self._label_name
+
+    @property
+    def mask_field_names(self):
+        """ The field names of train, validation and test masks
+        """
+        return self._mask_field_names
+
+    @property
+    def train_mask_name(self):
+        """ The field name of the train mask
+        """
+        return self._mask_field_names[0]
+
+    @property
+    def val_mask_name(self):
+        """ The field name of the validation mask
+        """
+        return self._mask_field_names[1]
+
+    @property
+    def test_mask_name(self):
+        """ The field name of the test mask
+        """
+        return self._mask_field_names[2]
 
     def data_split(self, get_valid_idx, num_samples):
         """ Split the data
@@ -1538,9 +1660,9 @@ class LabelProcessor:
         train_mask[train_idx] = 1
         val_mask[val_idx] = 1
         test_mask[test_idx] = 1
-        train_mask_name = 'train_mask'
-        val_mask_name = 'val_mask'
-        test_mask_name = 'test_mask'
+        train_mask_name = self.train_mask_name # default: 'train_mask'
+        val_mask_name = self.val_mask_name # default: 'val_mask'
+        test_mask_name = self.test_mask_name # default: 'test_mask'
         return {train_mask_name: train_mask,
                 val_mask_name: val_mask,
                 test_mask_name: test_mask}
@@ -1578,7 +1700,7 @@ class ClassificationProcessor(LabelProcessor):
             if self._stats_type == LABEL_STATS_FREQUENCY_COUNT:
                 # get train labels
                 train_labels = res[self.label_name][ \
-                    res['train_mask'].astype(np.bool_)]
+                    res[self.train_mask_name].astype(np.bool_)]
                 vals, counts = np.unique(train_labels, return_counts=True)
                 res[LABEL_STATS_FIELD+self.label_name] = \
                     (LABEL_STATS_FREQUENCY_COUNT, vals, counts)
@@ -1650,51 +1772,117 @@ def parse_label_ops(confs, is_node):
 
     Returns
     -------
-    list of LabelProcessor : the label processors generated from the configurations.
+    A tuple of
+        list of LabelProcessor : the label processors generated from the configurations.
     """
     label_confs = confs['labels']
-    assert len(label_confs) == 1, "We only support one label per node/edge type."
-    label_conf = label_confs[0]
-    assert 'task_type' in label_conf, "'task_type' must be defined in the label field."
-    task_type = label_conf['task_type']
-    label_stats_type = label_conf['label_stats_type'] \
-        if 'label_stats_type' in label_conf else None
-    label_stats_type = _check_label_stats_type(task_type, label_stats_type)
-    if 'custom_split_filenames' in label_conf:
-        custom_split = label_conf['custom_split_filenames']
-        assert isinstance(custom_split, dict), \
-                "Custom data split needs to provide train/val/test index."
-        train_idx = read_index_json(custom_split['train']) if 'train' in custom_split else None
-        val_idx = read_index_json(custom_split['valid']) if 'valid' in custom_split else None
-        test_idx = read_index_json(custom_split['test']) if 'test' in custom_split else None
-        label_col = label_conf['label_col'] if 'label_col' in label_conf else None
-        assert "node_id_col" in confs, "Custom data split only works for nodes."
-        return [CustomLabelProcessor(label_col, label_col, confs["node_id_col"],
-                                     task_type, train_idx, val_idx, test_idx,
-                                     label_stats_type)]
+    assert len(label_confs) >= 1, \
+        "If a 'labels' field is defined for a node type or an edge type in the " \
+        "configuration file, it should not be empty."
 
-    if 'split_pct' in label_conf:
-        split_pct = label_conf['split_pct']
-    else:
-        logging.info("'split_pct' is not found. " + \
-                "Use the default data split: train(80%), valid(10%), test(10%).")
-        split_pct = [0.8, 0.1, 0.1]
+    def parse_label_conf(label_conf):
+        assert 'task_type' in label_conf, "'task_type' must be defined in the label field."
+        task_type = label_conf['task_type']
+        label_stats_type = label_conf['label_stats_type'] \
+            if 'label_stats_type' in label_conf else None
+        label_stats_type = _check_label_stats_type(task_type, label_stats_type)
 
-    if task_type == 'classification':
-        assert 'label_col' in label_conf, \
-                "'label_col' must be defined in the label field."
-        label_col = label_conf['label_col']
-        return [ClassificationProcessor(label_col, label_col, split_pct, label_stats_type)]
-    elif task_type == 'regression':
-        assert 'label_col' in label_conf, \
-                "'label_col' must be defined in the label field."
-        label_col = label_conf['label_col']
-        return [RegressionProcessor(label_col, label_col, split_pct, label_stats_type)]
-    else:
-        assert task_type == 'link_prediction', \
-                "The task type must be classification, regression or link_prediction."
-        assert not is_node, "link_prediction task must be defined on edges."
-        return [LinkPredictionProcessor(None, None, split_pct, label_stats_type)]
+        # default mask names
+        mask_field_names = ("train_mask", "val_mask", "test_mask")
+        if 'mask_field_names' in label_conf:
+            # User defined mask names
+            assert isinstance(label_conf['mask_field_names'], list) and \
+                len(label_conf['mask_field_names']) == 3, \
+                "User defined mask_field_names must be a list of three strings." \
+                f"But get {label_conf['mask_field_names']}"
+            mask_field_names = tuple(label_conf['mask_field_names'])
+
+        if 'custom_split_filenames' in label_conf:
+            custom_split = label_conf['custom_split_filenames']
+            assert isinstance(custom_split, dict), \
+                    "Custom data split needs to provide train/val/test index."
+            if "column" not in custom_split:
+                custom_split["column"] = []
+            # Treat all input as an input of list[str]
+            if isinstance(custom_split['column'], str):
+                custom_split["column"] = [custom_split["column"]]
+            train_idx, val_idx, test_idx = read_index(custom_split)
+            label_col = label_conf['label_col'] if 'label_col' in label_conf else None
+            if "node_id_col" in confs:
+                return CustomLabelProcessor(col_name=label_col, label_name=label_col,
+                                            id_col=confs["node_id_col"],
+                                            task_type=task_type,
+                                            train_idx=train_idx,
+                                            val_idx=val_idx,
+                                            test_idx=test_idx,
+                                            stats_type=label_stats_type,
+                                            mask_field_names=mask_field_names)
+            elif "source_id_col" in confs and "dest_id_col" in confs:
+                return CustomLabelProcessor(col_name=label_col, label_name=label_col,
+                                            id_col=(confs["source_id_col"],
+                                                    confs["dest_id_col"]),
+                                            task_type=task_type,
+                                            train_idx=train_idx,
+                                            val_idx=val_idx,
+                                            test_idx=test_idx,
+                                            stats_type=label_stats_type,
+                                            mask_field_names=mask_field_names)
+            else:
+                raise AttributeError("Custom data segmentation should be "
+                                    "applied to either node or edge tasks.")
+
+        if 'split_pct' in label_conf:
+            split_pct = label_conf['split_pct']
+        else:
+            logging.info("'split_pct' is not found. " + \
+                    "Use the default data split: train(80%), valid(10%), test(10%).")
+            split_pct = [0.8, 0.1, 0.1]
+
+        if task_type == 'classification':
+            assert 'label_col' in label_conf, \
+                    "'label_col' must be defined in the label field."
+            label_col = label_conf['label_col']
+            return ClassificationProcessor(label_col, label_col, split_pct,
+                                            label_stats_type, mask_field_names)
+        elif task_type == 'regression':
+            assert 'label_col' in label_conf, \
+                    "'label_col' must be defined in the label field."
+            label_col = label_conf['label_col']
+            return RegressionProcessor(label_col, label_col, split_pct,
+                                        label_stats_type, mask_field_names)
+        else:
+            assert task_type == 'link_prediction', \
+                    "The task type must be classification, regression or link_prediction."
+            assert not is_node, "link_prediction task must be defined on edges."
+            return LinkPredictionProcessor(None, None, split_pct,
+                                            label_stats_type, mask_field_names)
+    label_ops = []
+    for label_conf in label_confs:
+        label_ops.append(parse_label_conf(label_conf))
+
+    if len(label_ops) > 1:
+        # check whether train/val/test mask names are
+        # different for different labels
+        mask_names = []
+        for ops in label_ops:
+            mask_names.append(ops.train_mask_name)
+            mask_names.append(ops.val_mask_name)
+            mask_names.append(ops.test_mask_name)
+        if len(mask_names) == len(set(mask_names)):
+            # In multi-task learning, we expect each task has
+            # its own train, validation and test mask fields.
+            # But there can be exceptions as users want to
+            # provide masks through node features or
+            # some tasks are sharing the same mask.
+            logging.warning("Some train/val/test mask field "
+                            "names are duplicated, please check: %s."
+                            "If you provide masks as node/edge features,"
+                            "please ignore this warning."
+                            "If you share train/val/test mask fields "
+                            "across different tasks, please ignore this warning.",
+                            mask_names)
+
+    return label_ops
 
 def process_labels(data, label_processors):
     """ Process labels
@@ -1710,8 +1898,14 @@ def process_labels(data, label_processors):
     -------
     dict of tensors : labels (optional) and train/validation/test masks.
     """
-    assert len(label_processors) == 1, "We only support one label per node/edge type."
-    return label_processors[0](data)
+    assert len(label_processors) >= 1, \
+        "Number of label_processors must be one or more."
+    ret = {}
+    for label_processor in label_processors:
+        label_feats = label_processor(data)
+        logging.debug("Label information: %s", label_feats)
+        ret.update(label_feats)
+    return ret
 
 def do_multiprocess_transform(conf, feat_ops, label_ops, in_files):
     """ Test whether the input data requires multiprocessing.

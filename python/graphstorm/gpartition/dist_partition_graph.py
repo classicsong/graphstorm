@@ -24,12 +24,17 @@ import logging
 import os
 import queue
 import time
+import shutil
 import subprocess
 import sys
 from typing import Dict
 from threading import Thread
 
-from graphstorm.gpartition import RandomPartitionAlgorithm
+from graphstorm.gpartition import (
+    ParMetisPartitionAlgorithm,
+    ParMETISConfig,
+    RandomPartitionAlgorithm,
+)
 from graphstorm.utils import get_log_level
 
 
@@ -39,7 +44,8 @@ def run_build_dglgraph(
         ip_list,
         output_path,
         metadata_filename,
-        dgl_tool_path):
+        dgl_tool_path,
+        ssh_port):
     """ Build DistDGL Graph
 
     Parameters
@@ -54,6 +60,8 @@ def run_build_dglgraph(
         Output Path
     metadata_filename: str
         The filename for the graph partitioning metadata file we'll use to determine data sources.
+    ssh_port: int
+        SSH port
     """
     # Get the python interpreter used right now.
     # If we can not get it we go with the default `python3`
@@ -68,7 +76,7 @@ def run_build_dglgraph(
         "--partitions-dir", partitions_dir,
         "--ip-config", ip_list,
         "--out-dir", output_path,
-        "--ssh-port", "22",
+        "--ssh-port", f"{ssh_port}",
         "--python-path", f"{python_bin}",
         "--log-level", logging.getLevelName(logging.root.getEffectiveLevel()),
         "--save-orig-nids",
@@ -114,6 +122,10 @@ def main():
     part_start = time.time()
     if args.partition_algorithm == "random":
         partitioner = RandomPartitionAlgorithm(metadata_dict)
+    elif args.partition_algorithm == "parmetis":
+        partition_config = ParMETISConfig(args.ip_config, args.input_path,
+                                          args.dgl_tool_path, args.metadata_filename)
+        partitioner = ParMetisPartitionAlgorithm(metadata_dict, partition_config)
     else:
         raise RuntimeError(f"Unknown partition algorithm {args.part_algorithm}")
 
@@ -125,21 +137,39 @@ def main():
         part_assignment_dir)
 
     part_end = time.time()
-    logging.info("Partition assignment took %f sec", part_end - part_start)
+    logging.info("Partition assignment with algorithm '%s' took %f sec",
+                 args.partition_algorithm,
+                 part_end - part_start,
+    )
 
-    if args.do_dispatch:
+    if not args.partition_assignment_only:
         run_build_dglgraph(
             args.input_path,
             part_assignment_dir,
-            args.ip_list,
+            args.ip_config,
             os.path.join(output_path, "dist_graph"),
             args.metadata_filename,
-            args.dgl_tool_path)
+            args.dgl_tool_path,
+            args.ssh_port)
 
         logging.info("DGL graph building took %f sec", part_end - time.time())
 
-    logging.info('Partition assignment and DGL graph creation took %f seconds',
+    # Copy raw_id_mappings to dist_graph if they exist in the input
+    raw_id_mappings_path = os.path.join(args.input_path, "raw_id_mappings")
+
+    if os.path.exists(raw_id_mappings_path):
+        logging.info("Copying raw_id_mappings to dist_graph")
+        shutil.copytree(
+            raw_id_mappings_path,
+            os.path.join(output_path, 'dist_graph/raw_id_mappings'),
+            dirs_exist_ok=True,
+        )
+
+    if not args.partition_assignment_only:
+        logging.info('Partition assignment and DGL graph creation took %f seconds',
                  time.time() - start)
+    else:
+        logging.info('Partition assignment took %f seconds', time.time() - start)
 
 def parse_args() -> argparse.Namespace:
     """Parses arguments for the script"""
@@ -153,13 +183,17 @@ def parse_args() -> argparse.Namespace:
                            help="Path to store the partitioned data")
     argparser.add_argument("--num-parts", type=int, required=True,
                            help="Number of partitions to generate")
-    argparser.add_argument("--dgl-tool-path", type=str,
+    argparser.add_argument("--ssh-port", type=int, default=22, help="SSH Port")
+    argparser.add_argument("--dgl-tool-path", type=str, default="/root/dgl/tools",
                            help="The path to dgl/tools")
     argparser.add_argument("--partition-algorithm", type=str, default="random",
-                           choices=["random"], help="Partition algorithm to use.")
-    argparser.add_argument("--ip-list", type=str,
-                           help="A file storing the ip list of instances of the partition cluster.")
-    argparser.add_argument("--do-dispatch", action='store_true')
+                           choices=["random", "parmetis"], help="Partition algorithm to use.")
+    argparser.add_argument("--ip-config", type=str,
+                           help=("A file storing a list of IPs, one line for "
+                                "each instance of the partition cluster."))
+    argparser.add_argument("--partition-assignment-only", action='store_true',
+                           help="Only generate partition assignments for nodes, \
+                                 the process will not build the partitioned DGL graph")
     argparser.add_argument("--logging-level", type=str, default="info",
                            help="The logging level. The possible values: debug, info, warning, \
                                    error. The default value is info.")

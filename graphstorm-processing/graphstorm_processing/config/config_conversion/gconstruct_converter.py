@@ -14,8 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
+import math
 from typing import Any
 from collections.abc import Mapping
+
+from graphstorm_processing.constants import SUPPORTED_FILE_TYPES, VALID_OUTDTYPE
 
 from .converter_base import ConfigConverter
 from .meta_configuration import NodeConfig, EdgeConfig
@@ -52,20 +55,38 @@ class GConstructConfigConverter(ConfigConverter):
                 label_column = label["label_col"] if "label_col" in label else ""
                 label_type = label["task_type"]
                 label_dict = {"column": label_column, "type": label_type}
-                if "split_pct" in label:
-                    label_splitrate = label["split_pct"]
-                    # check if split_pct is valid
-                    assert (
-                        sum(label_splitrate) <= 1.0
-                    ), "sum of the label split rate should be <=1.0"
-                    label_dict["split_rate"] = {
-                        "train": label_splitrate[0],
-                        "val": label_splitrate[1],
-                        "test": label_splitrate[2],
+                if "custom_split_filenames" not in label:
+                    if "split_pct" in label:
+                        label_splitrate = label["split_pct"]
+                        # check if split_pct is valid
+                        assert (
+                            math.fsum(label_splitrate) == 1.0
+                        ), "sum of the label split rate should be ==1.0"
+                        label_dict["split_rate"] = {
+                            "train": label_splitrate[0],
+                            "val": label_splitrate[1],
+                            "test": label_splitrate[2],
+                        }
+                else:
+                    label_custom_split_filenames = label["custom_split_filenames"]
+                    if isinstance(label_custom_split_filenames["column"], list):
+                        assert len(label_custom_split_filenames["column"]) <= 2, (
+                            "Custom split filenames should have one column for node labels, "
+                            "and two columns for edges labels exactly"
+                        )
+                    label_dict["custom_split_filenames"] = {
+                        "train": label_custom_split_filenames["train"],
+                        "valid": label_custom_split_filenames["valid"],
+                        "test": label_custom_split_filenames["test"],
+                        "column": label_custom_split_filenames["column"],
                     }
                 if "separator" in label:
                     label_sep = label["separator"]
                     label_dict["separator"] = label_sep
+                # Not supported for multi-task config for GSProcessing
+                assert "mask_field_names" not in label, (
+                    "GSProcessing currently cannot " "construct labels for multi-task learning"
+                )
                 labels_list.append(label_dict)
             except KeyError as exc:
                 raise KeyError(f"A required key was missing from label input {label}") from exc
@@ -93,6 +114,11 @@ class GConstructConfigConverter(ConfigConverter):
                 gsp_feat_dict["column"] = gconstruct_feat_dict["feature_col"]
             elif isinstance(gconstruct_feat_dict["feature_col"], list):
                 gsp_feat_dict["column"] = gconstruct_feat_dict["feature_col"][0]
+                if len(gconstruct_feat_dict["feature_col"]) >= 2:
+                    assert "feature_name" in gconstruct_feat_dict, (
+                        "feature_name should be in the gconstruct "
+                        "feature field when feature_col is a list"
+                    )
             if "feature_name" in gconstruct_feat_dict:
                 gsp_feat_dict["name"] = gconstruct_feat_dict["feature_name"]
 
@@ -102,7 +128,15 @@ class GConstructConfigConverter(ConfigConverter):
 
                 if gconstruct_transform_dict["name"] == "max_min_norm":
                     gsp_transformation_dict["name"] = "numerical"
-                    gsp_transformation_dict["kwargs"] = {"normalizer": "min-max", "imputer": "none"}
+                    gsp_transformation_dict["kwargs"] = {
+                        "normalizer": "min-max",
+                        "imputer": "none",
+                    }
+
+                    if gconstruct_transform_dict.get("out_dtype") in VALID_OUTDTYPE:
+                        gsp_transformation_dict["kwargs"]["out_dtype"] = gconstruct_transform_dict[
+                            "out_dtype"
+                        ]
                 elif gconstruct_transform_dict["name"] == "bucket_numerical":
                     gsp_transformation_dict["name"] = "bucket-numerical"
                     assert (
@@ -119,17 +153,19 @@ class GConstructConfigConverter(ConfigConverter):
                     }
                 elif gconstruct_transform_dict["name"] == "rank_gauss":
                     gsp_transformation_dict["name"] = "numerical"
+                    gsp_transformation_dict["kwargs"] = {
+                        "normalizer": "rank-gauss",
+                        "imputer": "none",
+                    }
+
                     if "epsilon" in gconstruct_transform_dict:
-                        gsp_transformation_dict["kwargs"] = {
-                            "epsilon": gconstruct_transform_dict["epsilon"],
-                            "normalizer": "rank-gauss",
-                            "imputer": "none",
-                        }
-                    else:
-                        gsp_transformation_dict["kwargs"] = {
-                            "normalizer": "rank-gauss",
-                            "imputer": "none",
-                        }
+                        gsp_transformation_dict["kwargs"]["epsilon"] = gconstruct_transform_dict[
+                            "epsilon"
+                        ]
+                    if gconstruct_transform_dict.get("out_dtype") in ["float32", "float64"]:
+                        gsp_transformation_dict["kwargs"]["out_dtype"] = gconstruct_transform_dict[
+                            "out_dtype"
+                        ]
                 elif gconstruct_transform_dict["name"] == "to_categorical":
                     if "separator" in gconstruct_transform_dict:
                         gsp_transformation_dict["name"] = "multi-categorical"
@@ -164,8 +200,8 @@ class GConstructConfigConverter(ConfigConverter):
 
             if "out_dtype" in gconstruct_feat_dict:
                 assert (
-                    gconstruct_feat_dict["out_dtype"] == "float32"
-                ), "GSProcessing currently only supports float32 features"
+                    gconstruct_feat_dict["out_dtype"] in VALID_OUTDTYPE
+                ), "GSProcessing currently only supports float32 or float64 features"
 
             gsp_feat_dict["transformation"] = gsp_transformation_dict
             gsp_feats_list.append(gsp_feat_dict)
@@ -180,6 +216,9 @@ class GConstructConfigConverter(ConfigConverter):
             node_type, node_col = n["node_type"], n["node_id_col"]
             # format
             node_format = n["format"]["name"]
+            assert (
+                node_format in SUPPORTED_FILE_TYPES
+            ), "GSProcessing only supports parquet files and csv files."
             if "separator" not in n["format"]:
                 node_separator = None
             else:
@@ -229,6 +268,9 @@ class GConstructConfigConverter(ConfigConverter):
 
             # format
             edge_format = e["format"]["name"]
+            assert (
+                edge_format in SUPPORTED_FILE_TYPES
+            ), "GSProcessing only supports parquet files and csv files."
             if "separator" not in e["format"]:
                 edge_separator = None
             else:

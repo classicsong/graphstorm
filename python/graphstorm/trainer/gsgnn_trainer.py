@@ -17,7 +17,6 @@
 """
 import os
 import logging
-import torch as th
 
 from ..model import GSOptimizer
 from ..model import GSgnnModel, GSgnnModelBase
@@ -57,7 +56,6 @@ class GSgnnTrainer():
                 logging.warning("the optimizer is not GSOptimizer. Convert it to GSOptimizer.")
             optimizer = GSOptimizer([optimizer])
         self._optimizer = optimizer
-        self._device = -1
         self._evaluator = None
         self._best_model_path = None
 
@@ -77,7 +75,7 @@ class GSgnnTrainer():
         device :
             The device for model training.
         """
-        self._device = th.device(device)
+        self._device = device
         self._model = self._model.to(self.device)
         self._optimizer.move_to_device(self._model.device)
 
@@ -188,7 +186,7 @@ class GSgnnTrainer():
         best_val_score = self.evaluator.best_val_score
         best_test_score = self.evaluator.best_test_score
         best_iter_num = self.evaluator.best_iter_num
-        self.task_tracker.log_iter_metrics(self.evaluator.metric,
+        self.task_tracker.log_iter_metrics(self.evaluator.metric_list,
                 train_score=train_score, val_score=val_score,
                 test_score=test_score, best_val_score=best_val_score,
                 best_test_score=best_test_score, best_iter_num=best_iter_num,
@@ -325,6 +323,25 @@ class GSgnnTrainer():
         # compatible.
         if model_layer_to_load == GRAPHSTORM_MODEL_ALL_LAYERS:
             self._optimizer.load_opt_state(model_path, self._model.device)
+
+    def can_do_validation(self, val_dataloader):
+        """ A unified method to judge if a trainer can do model evaluation
+
+        Parameters
+        ----------
+        val_dataloader: Dataloader
+            GraphStorm Dataloader for validation
+
+        Return
+        -------
+        True or False
+            Whether do model validation.
+        """
+        # check if have evaluator or if have validation dataloader
+        if self.evaluator is None or val_dataloader is None:
+            return False
+        else:
+            return True
 
     @property
     def evaluator(self):

@@ -31,23 +31,15 @@ from ..utils import sys_tracker, rt_profiler, print_mem, get_rank
 from ..utils import barrier, is_distributed, get_backend
 
 class GSgnnEdgePredictionTrainer(GSgnnTrainer):
-    """ Edge prediction trainer.
+    """ Trainer for edge prediction tasks.
 
-    This class is used to train models for edge prediction tasks,
-    such as edge classification and edge regression.
+    ``GSgnnEdgePredictionTrainer`` is used to train models for edge prediction tasks,
+    such as edge classification and edge regression. ``GSgnnEdgePredictionTrainer``
+    define two main functions: 
 
-    It makes use of the functions provided by `GSgnnTrainer`
-    to define two main functions: `fit` that performs the training
-    for the model that is provided when the object is created,
-    and `eval` that evaluates a provided model against test and
-    validation data.
-
-    Parameters
-    ----------
-    model : GSgnnEdgeModel
-        The GNN model for edge prediction.
-    topk_model_to_save : int
-        The top K model to save.
+    * ``fit()``: performs the training for the model provided to this trainer
+      when the object is initialized, and;
+    * ``eval()``: evaluates the provided model against test and validation dataset.
 
     Example
     -------
@@ -55,22 +47,31 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
     .. code:: python
 
         from graphstorm.dataloading import GSgnnEdgeDataLoader
-        from graphstorm.dataset import GSgnnEdgeData
+        from graphstorm.dataset import GSgnnData
         from graphstorm.model import GSgnnEdgeModel
         from graphstorm.trainer import GSgnnEdgePredictionTrainer
 
-        my_dataset = GSgnnEdgeTrainData(
-            "my_graph", "/path/to/part_config", train_etypes="edge_type")
-        target_idx = {"edge_type": target_edges_tensor}
-        my_data_loader = GSgnnEdgeDataLoader(
-            my_dataset, target_idx, fanout=[10], batch_size=1024)
-        my_model = GSgnnEdgeModel(alpha_l2norm=0.0)
+        ep_data = GSgnnData("...")
+        target_idx = ep_data.get_edge_train_set([("src_ntype1", "etype1", "dst_ntype1)])
+        train_loader = GSgnnEdgeDataLoader(
+            ep_dataset, target_idx, fanout=[10], batch_size=1024,
+            label_field="label", node_feats="feat", train_task=True)
+        model = GSgnnEdgeModel(alpha_l2norm=0.0)
 
-        trainer = GSgnnEdgePredictionTrainer(my_model, topk_model_to_save=1)
+        trainer = GSgnnEdgePredictionTrainer(model)
 
-        trainer.fit(my_data_loader, num_epochs=2)
+        trainer.fit(train_loader, num_epochs=2)
+
+    Parameters
+    ----------
+    model : GSgnnEdgeModelBase
+        The GNN model for edge prediction, which could be a model class inherited from the
+        ``GSgnnEdgeModelBase``, or a model class that inherits both the ``GSgnnModelBase``
+        and the ``GSgnnEdgeModelInterface`` class.
+    topk_model_to_save : int
+        The top `K` model to be saved based on evaluation results. Default: 1.
     """
-    def __init__(self, model, topk_model_to_save):
+    def __init__(self, model, topk_model_to_save=1):
         super(GSgnnEdgePredictionTrainer, self).__init__(model, topk_model_to_save)
         assert isinstance(model, GSgnnEdgeModelInterface) and isinstance(model, GSgnnModelBase), \
                 "The input model is not an edge model. Please implement GSgnnEdgeModelBase."
@@ -80,47 +81,62 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
             test_loader=None,
             use_mini_batch_infer=True,
             save_model_path=None,
-            save_model_frequency=None,
+            save_model_frequency=-1,
             save_perf_results_path=None,
             freeze_input_layer_epochs=0,
             max_grad_norm=None,
             grad_norm_type=2.0):
-        """ The fit function for edge prediction.
+        """ Fit function for edge prediction.
 
-        Performs the training for `self.model`. Iterates over the training
-        batches in `train_loader` to compute the loss and perform the backwards
-        step using `self.optimizer`. If an evaluator has been assigned to the
-        trainer, it will run evaluation at the end of every epoch.
+        This function performs the training for the given edge prediction model.
+        It iterates over the training batches provided by the ``train_loader``
+        to compute the loss, and then performs the backward steps using trainer's
+        own optimizer. 
+
+        If an evaluator and a validation dataloader are added to this trainer, during
+        training, the trainer will perform model evaluation in three cases:
+
+        * At the end of each epoch.
+        * At the evaluation frequency (number of iterations) defined in the evaluator.
+        * Before saving a model checkpoint.
 
         Parameters
         ----------
-        train_loader : GSgnnEdgeDataLoader
-            The mini-batch sampler for training.
-        num_epochs : int
-            The max number of epochs to train the model.
-        val_loader : GSgnnEdgeDataLoader
-            The mini-batch sampler for computing validation scores. The validation scores
-            are used for selecting models.
-        test_loader : GSgnnEdgeDataLoader
-            The mini-batch sampler for computing test scores.
-        use_mini_batch_infer : bool
-            Whether or not to use mini-batch inference.
-        save_model_path : str
-            The path where the model is saved.
-        save_model_frequency : int
-            The number of iteration to train the model before saving the model.
-        save_perf_results_path : str
-            The path of the file where the performance results are saved.
+        train_loader: GSgnnEdgeDataLoader
+            Edge dataloader for mini-batch sampling the training set.
+        num_epochs: int
+            The max number of epochs used to train the model.
+        val_loader: GSgnnEdgeDataLoader
+            Edge dataloader for mini-batch sampling the validation set.
+            Default: None.
+        test_loader: GSgnnEdgeDataLoader
+            Edge dataloader for mini-batch sampling the test set. Default: None.
+        use_mini_batch_infer: bool
+            Whether to use mini-batch for inference. Default: True.
+        save_model_path: str
+            The path where trained model checkpoints are saved. If is None, will not
+            save model checkpoints.
+            Default: None.
+        save_model_frequency: int
+            The number of iterations to train the model before saving a model checkpoint. 
+            Default: -1, meaning only save a model after each epoch.
+        save_perf_results_path: str
+            The path of the file where the performance results are saved. Default: None.
         freeze_input_layer_epochs: int
-            Freeze input layer model for N epochs. This is commonly used when
-            the input layer contains language models.
-            Default: 0, no freeze.
+            The number of epochs to freeze the input layer from updating trainable
+            parameters. This is commonly used when the input layer contains language models.
+            Default: 0.
         max_grad_norm: float
-            Clip the gradient by the max_grad_norm to ensure stability.
-            Default: None, no clip.
+            A value used to clip the gradient, which can enhance training stability.
+            More explanation of this argument can be found
+            in `torch.nn.utils.clip_grad_norm_ <https://pytorch.org/docs/2.1/generated/
+            torch.nn.utils.clip_grad_norm_.html#torch.nn.utils.clip_grad_norm_>`__.
+            Default: None.
         grad_norm_type: float
-            Norm type for the gradient clip
-            Default: 2.0
+            Norm type for the gradient clip. More explanation of this argument can be found
+            in `torch.nn.utils.clip_grad_norm_ <https://pytorch.org/docs/2.1/generated/
+            torch.nn.utils.clip_grad_norm_.html#torch.nn.utils.clip_grad_norm_>`__.
+            Default: 2.0.
         """
         # Check the correctness of configurations.
         if self.evaluator is not None:
@@ -170,14 +186,16 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                 if not isinstance(input_nodes, dict):
                     assert len(batch_graph.ntypes) == 1
                     input_nodes = {batch_graph.ntypes[0]: input_nodes}
-                input_feats = data.get_node_feats(input_nodes, device)
+                nfeat_fields = train_loader.node_feat_fields
+                input_feats = data.get_node_feats(input_nodes, nfeat_fields, device)
 
-                if data.decoder_edge_feat is not None:
+                if train_loader.decoder_edge_feat_fields is not None:
                     input_edges = {etype: batch_graph.edges[etype].data[dgl.EID] \
                             for etype in batch_graph.canonical_etypes}
-                    edge_decoder_feats = data.get_edge_feats(input_edges,
-                                                             data.decoder_edge_feat,
-                                                             device)
+                    edge_decoder_feats = \
+                        data.get_edge_feats(input_edges,
+                                            train_loader.decoder_edge_feat_fields,
+                                            device)
                     edge_decoder_feats = {etype: feat.to(th.float32) \
                         for etype, feat in edge_decoder_feats.items()}
                 else:
@@ -186,11 +204,15 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
 
                 # retrieving seed edge id from the graph to find labels
                 # TODO(zhengda) expand code for multiple edge types
-                assert len(batch_graph.etypes) == 1
+                assert len(batch_graph.etypes) == 1, \
+                    "Edge classification/regression tasks only support " \
+                    "conducting prediction on one edge type."
                 target_etype = batch_graph.canonical_etypes[0]
                 # TODO(zhengda) the data loader should return labels directly.
                 seeds = batch_graph.edges[target_etype[1]].data[dgl.EID]
-                lbl = data.get_labels({target_etype: seeds}, device)
+
+                label_field = train_loader.label_field
+                lbl = data.get_edge_feats({target_etype: seeds}, label_field, device)
                 blocks = [block.to(device) for block in blocks]
                 batch_graph = batch_graph.to(device)
                 rt_profiler.record('train_graph2GPU')
@@ -218,8 +240,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                             get_rank(), epoch, i, loss.item(), time.time() - batch_tic)
 
                 val_score = None
-                if self.evaluator is not None and \
-                    self.evaluator.do_eval(total_steps, epoch_end=False):
+                if self.can_do_validation(val_loader) and self.evaluator.do_eval(total_steps):
                     val_score = self.eval(model.module if is_distributed() else model,
                                           val_loader, test_loader,
                                           use_mini_batch_infer, total_steps, return_proba=False)
@@ -227,19 +248,23 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                     if self.evaluator.do_early_stop(val_score):
                         early_stop = True
 
-                # Every n iterations, check to save the top k models. If has validation score,
-                # will save # the best top k. But if no validation, will either save
-                # the last k model or all models depends on the setting of top k
+                # In every save_model_frequency iterations, check to save the top k models.
+                # If has validation score, will save the best top k. If no validation, will
+                # either save the last k model or all models depends on the setting of top k.
                 if save_model_frequency > 0 and \
                     total_steps % save_model_frequency == 0 and \
                     total_steps != 0:
-                    if self.evaluator is None or val_score is not None:
-                        # We will save the best model when
-                        # 1. There is no evaluation, we will keep the
-                        #    latest K models.
-                        # 2. There is evaluaiton, we need to follow the
-                        #    guidance of validation score.
-                        self.save_topk_models(model, epoch, i, val_score, save_model_path)
+                    if val_score is None:
+                        # not in the same eval_frequncy iteration
+                        if self.can_do_validation(val_loader):
+                            # for model saving, force to do evaluation if can
+                            val_score = self.eval(model.module if is_distributed() else model,
+                                                val_loader, test_loader, use_mini_batch_infer,
+                                                total_steps, return_proba=False)
+                    # We will save the best model when
+                    # 1. If not do evaluation, we will keep the latest K models.
+                    # 2. If do evaluaiton, we need to follow the guidance of validation score.
+                    self.save_topk_models(model, epoch, i, val_score, save_model_path)
 
                 rt_profiler.record('train_eval')
                 batch_tic = time.time()
@@ -255,7 +280,8 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                 logging.info("Epoch %d take %.3f seconds", epoch, epoch_time)
 
             val_score = None
-            if self.evaluator is not None and self.evaluator.do_eval(total_steps, epoch_end=True):
+            # do evaluation and model saving after each epoch if can
+            if self.can_do_validation(val_loader):
                 val_score = self.eval(model.module if is_distributed() else model,
                                       val_loader, test_loader, use_mini_batch_infer,
                                       total_steps, return_proba=False)
@@ -268,6 +294,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
             # depends on the setting of top k. To show this is after epoch save, set the iteration
             # to be None, so that we can have a determistic model folder name for testing and debug.
             self.save_topk_models(model, epoch, None, val_score, save_model_path)
+            # make sure saving model finishes properly before the main process kills this training
             barrier()
 
             # early_stop, exit training
@@ -283,7 +310,7 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
                        'peak_RAM_mem_alloc_MB': \
                            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
                        'best validation iteration': \
-                           self.evaluator.best_iter_num[self.evaluator.metric[0]],
+                           self.evaluator.best_iter_num[self.evaluator.metric_list[0]],
                        'best model path': \
                            self.get_best_model_path() if save_model_path is not None else \
                                "No model is saved, please set save_model_path"}
@@ -295,31 +322,35 @@ class GSgnnEdgePredictionTrainer(GSgnnTrainer):
 
     def eval(self, model, val_loader, test_loader, use_mini_batch_infer, total_steps,
              return_proba=True):
-        """ do the model evaluation using validation and test sets
+        """ Do model evaluation using the validation set, or test set if provided.
 
         Parameters
         ----------
-        model : Pytorch model
-            The GNN model.
-        val_loader: GSNodeDataLoader
-            The dataloader for validation data
-        test_loader : GSNodeDataLoader
-            The dataloader for test data.
-        use_mini_batch_infer : bool
-            Whether or not to use mini-batch inference.
+        model: GSgnnEdgeModelBase
+            The GNN model for edge prediction, which could be a model class inherited from the
+            ``GSgnnEdgeModelBase``, or a model class that inherits both the ``GSgnnModelBase``
+            and the ``GSgnnEdgeModelInterface`` class.
+        val_loader: GSgnnEdgeDataLoader
+            Edge dataloader for mini-batch sampling the validation set. Default: None.
+        test_loader: GSgnnEdgeDataLoader
+            Edge dataloader for mini-batch sampling the test set. Default: None.
+        use_mini_batch_infer: bool
+            Whether to use mini-batch for inference. Default: True.
         total_steps: int
-            Total number of iterations.
+            The total number of iterations.
         return_proba: bool
-            Whether to return all the predictions or the maximum prediction.
+            Whether to return the prediction results or the argmax results for
+            classification tasks.
 
         Returns
         -------
-        float: validation score
+        val_score: dict
+            Validation scores of differnet metrics in the format of {metric: val_score}.
         """
         test_start = time.time()
         sys_tracker.check('start prediction')
 
-        metric = set(self.evaluator.metric)
+        metric = set(self.evaluator.metric_list)
         need_proba = metric.intersection({'roc_auc', 'per_class_roc_auc', 'precision_recall'})
         need_label_pred = metric.intersection({'accuracy', 'f1_score', 'per_class_f1_score'})
         assert len(need_proba) == 0 or len(need_label_pred) == 0, \
