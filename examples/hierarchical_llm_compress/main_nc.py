@@ -26,7 +26,7 @@ from graphstorm.config import get_argument_parser
 from graphstorm.config import GSConfig
 from graphstorm.config import (BUILTIN_TASK_NODE_CLASSIFICATION,
                                BUILTIN_TASK_NODE_REGRESSION)
-from graphstorm.dataloader import GSgnnNodeTrainData
+from graphstorm.dataloading import GSgnnData
 from graphstorm.model.node_decoder import EntityClassifier, EntityRegression
 from graphstorm.model.loss_func import (ClassifyLossFunc,
                                         RegressionLossFunc)
@@ -122,12 +122,9 @@ def main(args):
         training_args.fp16)
     model = create_node_hierarchical_lm_compress_model(args, config, model_args)
 
-    train_data = GSgnnNodeTrainData(config.graph_name,
-                                    config.part_config,
-                                    train_ntypes=config.target_ntype,
-                                    eval_ntypes=config.eval_target_ntype,
-                                    node_feat_field=config.node_feat_name,
-                                    label_field=config.label_field)
+    train_data = GSgnnData(config.part_config,
+                           node_feat_field=config.node_feat_name,
+                           label_field=config.label_field)
 
     f1_macro_metric = evaluate.load("f1")
     accuracy_metric = evaluate.load("accuracy")
