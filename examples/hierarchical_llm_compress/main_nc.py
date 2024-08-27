@@ -40,34 +40,23 @@ from transformers import (
 
 
 from config import ModelArguments
-from lm_model import load_hf_tokenizer, load_hf_model
+from lm_model import load_hf_model, SUPPORTED_MODEL_DICT
 from lm_model import LMForGraphNodeTask
 from hlc_trainer import HLCNodePredictionTrainer
 from dataloader import HierarchiCompressNodeDataLoader
-
-SUPPORTED_MODEL_DICT = {
-    "bert": "bert-base-cased",
-    "mpnet": "sentence-transformers/all-mpnet-base-v2",
-    "opt-1.3b": "facebook/opt-1.3b",
-    "opt-2.7b": "facebook/opt-2.7b",
-    "ac-opt-1.3b": "princeton-nlp/AutoCompressor-1.3b-30k",
-    "hc-opt-1.3b": "princeton-nlp/AutoCompressor-1.3b-30k",
-    "hc-opt-2.7b": "princeton-nlp/AutoCompressor-2.7b-6k",
-    "mistral": "mistralai/Mistral-7B-v0.1",
-}
 
 def create_node_hierarchical_lm_compress_model(args, gs_config, model_args):
     model_name = args.hnc_lm_model
     compress_mode = args.compress_mode
     num_labels = gs_config.num_classes
-    encoder, config = load_hf_model(model_name, compress_mode, num_labels, model_args)
-
+    encoder, config, output_name = load_hf_model(model_name, compress_mode, num_labels, model_args, gs_config)
 
     config.get_all_text_embeddings_batch_size = model_args.get_all_text_embeddings_batch_size
     config.pooling_strategy = model_args.pooling_strategy
 
     output_name += f"_{config.pooling_strategy}_pooling"
-    model = LMForGraphNodeTask(config=config, encoder=encoder)
+    model = LMForGraphNodeTask(config=config, encoder=encoder, target_ntype=gs_config.target_ntype[0])
+    assert len(gs_config.target_ntype) == 1
 
     if gs_config.task_type == BUILTIN_TASK_NODE_CLASSIFICATION:
             decoder = {}

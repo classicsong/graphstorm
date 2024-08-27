@@ -38,9 +38,8 @@ def rearrange_and_trim(input_ids, attention_mask):
 
 
 class HierarchicalCompressorModel(AutoCompressorModel):
-    def __init__(self, config, data, fanouts):
+    def __init__(self, config, fanouts):
         super().__init__(config)
-        self.data = data
         self.sampler = dgl.dataloading.MultiLayerNeighborSampler(fanouts)
         self.fanouts = fanouts
         self.accumulate_summary = config.accumulate_summary

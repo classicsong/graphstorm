@@ -33,8 +33,19 @@ from transformers import (
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.modeling_utils import PreTrainedModel
 
-from .hierarchical_compressor import HierarchicalCompressorModel
-from .auto_compressor import AutoCompressorModel
+from hierarchical_compressor import HierarchicalCompressorModel
+from auto_compressor import AutoCompressorModel
+
+SUPPORTED_MODEL_DICT = {
+    "bert": "bert-base-cased",
+    "mpnet": "sentence-transformers/all-mpnet-base-v2",
+    "opt-1.3b": "facebook/opt-1.3b",
+    "opt-2.7b": "facebook/opt-2.7b",
+    "ac-opt-1.3b": "princeton-nlp/AutoCompressor-1.3b-30k",
+    "hc-opt-1.3b": "princeton-nlp/AutoCompressor-1.3b-30k",
+    "hc-opt-2.7b": "princeton-nlp/AutoCompressor-2.7b-6k",
+    "mistral": "mistralai/Mistral-7B-v0.1",
+}
 
 @dataclass
 class NodeClassificationOutput(SequenceClassifierOutput):
@@ -55,7 +66,26 @@ def load_hf_tokenizer(model_args, model_path):
         # tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.pad_token='[PAD]'
 
-def load_hf_model(model_path, compress_mode, num_labels, model_args):
+    return tokenizer
+
+def load_hf_model(model_name, compress_mode, num_labels, model_args, gs_config):
+    """ Load language model
+
+    Parameters
+    ----------
+    model_name: str
+        Huggingface model name
+    compress_mode: str
+        Compression model
+    num_labels: int
+
+    model_args: HFArguement
+        Huggingface config
+    gs_config: GSConfig
+        GraphStorm configs
+    """
+    output_name = model_name
+    model_path = SUPPORTED_MODEL_DICT[model_name]
     tokenizer = load_hf_tokenizer(model_args, model_path)
 
     if model_args.use_auth_token:
@@ -70,23 +100,22 @@ def load_hf_model(model_path, compress_mode, num_labels, model_args):
 
     if compress_mode == "hc":
         accumulate_summary = model_args.accumulate_summary
-        fanouts = model_args.fanouts
+        fanouts = gs_config.fanout
         segment_lengths = model_args.segment_lengths
 
         output_name += f'_{fanouts}_{segment_lengths}_{model_args.tokenizer_max_length}'
         if accumulate_summary:
             output_name += '_acc_sum'
 
-        config.fanouts = model_args.fanouts
+        config.fanouts = fanouts
         config.accumulate_summary = model_args.accumulate_summary
         config.segment_lengths = model_args.segment_lengths
         config.tokenizer_max_length = model_args.tokenizer_max_length
 
         config.hc = True
         encoder = HierarchicalCompressorModel.from_pretrained(model_path,
-                                                            config=config,
-                                                            graph=graph,
-                                                            ntext=text)
+                                                              config=config,
+                                                              fanouts=fanouts)
     elif compress_mode == "ac":
         accumulate_summary = model_args.accumulate_summary
         segment_lengths = model_args.segment_lengths
@@ -106,7 +135,7 @@ def load_hf_model(model_path, compress_mode, num_labels, model_args):
         encoder = AutoModel.from_pretrained(model_path,
                                             config=config,
                                             use_auth_token=token if model_args.use_auth_token else None)
-    return encoder, config
+    return encoder, config, output_name
 
 # Pooling function from https://huggingface.co/sentence-transformers/all-mpnet-base-v2
 def mean_pooling(token_embeddings, attention_mask):
@@ -170,40 +199,36 @@ class LMForGraphTask(PreTrainedModel):
         return embeddings
 
 class LMForGraphNodeTask(LMForGraphTask):
-    def __init__(self, config, encoder, text):
-        super().__init__(config, encoder, text)
+    def __init__(self, config, encoder, target_ntype):
+        super().__init__(config, encoder)
 
-        self.num_labels = config.num_labels
-        self.classifier = nn.Linear(config.hidden_size, self.num_labels, bias=False)
+        self._target_ntype = target_ntype
+        self._hidden_size = config.hidden_size
         # Initialize weights and apply final processing
         self.post_init()
+
+    @property
+    def hidden_dim(self):
+        return self._hidden_size
+
+    def set_decoder(self, decoder):
+        self._decoder = decoder
+
+    def set_loss_func(self, loss_func):
+        self._loss_func = loss_func
 
     def forward(self, predict_nids, labels, return_dict=None):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         embeddings, transformer_outputs = \
             self.encode(predict_nids, return_transformer_outputs=True)
 
-        logits = self.classifier(embeddings)
+        logits = self._decoder[self._target_ntype](embeddings)
+
 
         loss = None
         if labels is not None:
-            if self.config.problem_type is None:
-                if self.num_labels == 1:
-                    self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-                    self.config.problem_type = "single_label_classification"
-                else:
-                    self.config.problem_type = "multi_label_classification"
+            loss = self._loss_func[self._target_ntype](logits, labels)
 
-            if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
-                if self.num_labels == 1:
-                    loss = loss_fct(logits.squeeze(), labels.squeeze())
-                else:
-                    loss = loss_fct(logits, labels)
-            elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
         if not return_dict:
             output = (logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
