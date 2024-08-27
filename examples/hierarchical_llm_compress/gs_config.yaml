@@ -1,0 +1,31 @@
+---
+version: 1.0
+gsf:
+  basic:
+    backend: gloo
+    verbose: false
+  gnn:
+    model_encoder_type: rgcn
+    fanout: "4,4"
+    num_layers: 2
+    hidden_size: 128
+  output:
+    save_model_path: ./model/
+  hyperparam:
+    dropout: 0.
+    lr: 0.001
+    lm_tune_lr: 0.0001
+    num_epochs: 3
+    batch_size: 2
+    eval_batch_size: 2
+    wd_l2norm: 0
+    no_validation: false
+  rgcn:
+    num_bases: -1
+    use_self_loop: true
+  node_classification:
+    target_ntype: "item"
+    label_field: "pt_lvl3"
+    multilabel: false
+    num_classes: 19
+    num_classes: 23
