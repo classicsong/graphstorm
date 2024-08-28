@@ -1198,7 +1198,7 @@ class GSConfig:
                 assert isinstance(feat_info[1], str), \
                     f"Feature name of {ntype} should be a string not {feat_info[1]}"
                 # multiple features separated by ','
-                fname_dict[ntype] = feat_info[1].split(",")
+                fname_dict[ntype] = [item.strip() for item in feat_info[1].split(",")]
             return fname_dict
 
         # By default, return None which means there is no node feature
@@ -2635,19 +2635,29 @@ class GSConfig:
             if hasattr(self, "_eval_metric"):
                 if isinstance(self._eval_metric, str):
                     eval_metric = self._eval_metric.lower()
-                    assert eval_metric in SUPPORTED_LINK_PREDICTION_METRICS, \
-                        f"Link prediction evaluation metric should be " \
-                        f"in {SUPPORTED_LINK_PREDICTION_METRICS}" \
-                        f"but get {self._eval_metric}"
+                    if eval_metric.startswith(SUPPORTED_HIT_AT_METRICS):
+                        assert eval_metric[len(SUPPORTED_HIT_AT_METRICS) + 1:].isdigit(), \
+                            "hit_at_k evaluation metric for link prediction " \
+                            f"must end with an integer, but get {eval_metric}"
+                    else:
+                        assert eval_metric in SUPPORTED_LINK_PREDICTION_METRICS, \
+                            f"Link prediction evaluation metric should be " \
+                            f"in {SUPPORTED_LINK_PREDICTION_METRICS}" \
+                            f"but get {self._eval_metric}"
                     eval_metric = [eval_metric]
                 elif isinstance(self._eval_metric, list) and len(self._eval_metric) > 0:
                     eval_metric = []
                     for metric in self._eval_metric:
                         metric = metric.lower()
-                        assert metric in SUPPORTED_LINK_PREDICTION_METRICS, \
-                            f"Link prediction evaluation metric should be " \
-                            f"in {SUPPORTED_LINK_PREDICTION_METRICS}" \
-                            f"but get {self._eval_metric}"
+                        if metric.startswith(SUPPORTED_HIT_AT_METRICS):
+                            assert metric[len(SUPPORTED_HIT_AT_METRICS) + 1:].isdigit(), \
+                                "hit_at_k evaluation metric for link prediction " \
+                                f"must end with an integer, but get {metric}"
+                        else:
+                            assert metric in SUPPORTED_LINK_PREDICTION_METRICS, \
+                                f"Link prediction evaluation metric should be " \
+                                f"in {SUPPORTED_LINK_PREDICTION_METRICS}" \
+                                f"but get {self._eval_metric}"
                         eval_metric.append(metric)
                 else:
                     assert False, "Link prediction evaluation metric " \
@@ -2991,7 +3001,9 @@ def _add_node_classification_args(parser):
             "The weights should be in the following format 0.1,0.2,0.3,0.1,0.0 ")
     group.add_argument("--num-classes", type=int, default=argparse.SUPPRESS,
                        help="The cardinality of labels in a classifiction task")
-    group.add_argument("--return-proba", type=bool, default=argparse.SUPPRESS,
+    group.add_argument("--return-proba",
+                       type=lambda x: (str(x).lower() in ['true', '1']),
+                       default=argparse.SUPPRESS,
                        help="Whether to return the probabilities of all the predicted \
                        results or only the maximum one. Set True to return the \
                        probabilities. Set False to return the maximum one.")

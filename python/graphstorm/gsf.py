@@ -34,8 +34,9 @@ from .config import (BUILTIN_TASK_NODE_CLASSIFICATION,
                      BUILTIN_TASK_EDGE_REGRESSION,
                      BUILTIN_TASK_LINK_PREDICTION,
                      BUILTIN_TASK_RECONSTRUCT_NODE_FEAT)
-from .config import BUILTIN_LP_DOT_DECODER
-from .config import BUILTIN_LP_DISTMULT_DECODER
+from .config import (BUILTIN_LP_DOT_DECODER,
+                     BUILTIN_LP_DISTMULT_DECODER,
+                     BUILTIN_LP_ROTATE_DECODER)
 from .config import (BUILTIN_LP_LOSS_CROSS_ENTROPY,
                      BUILTIN_LP_LOSS_CONTRASTIVELOSS)
 from .model.embed import GSNodeEncoderInputLayer
@@ -65,7 +66,10 @@ from .model.edge_decoder import (LinkPredictDotDecoder,
                                  LinkPredictContrastiveDotDecoder,
                                  LinkPredictContrastiveDistMultDecoder,
                                  LinkPredictWeightedDotDecoder,
-                                 LinkPredictWeightedDistMultDecoder)
+                                 LinkPredictWeightedDistMultDecoder,
+                                 LinkPredictRotatEDecoder,
+                                 LinkPredictContrastiveRotatEDecoder,
+                                 LinkPredictWeightedRotatEDecoder)
 from .dataloading import (BUILTIN_LP_UNIFORM_NEG_SAMPLER,
                           BUILTIN_LP_JOINT_NEG_SAMPLER,BUILTIN_LP_INBATCH_JOINT_NEG_SAMPLER,
                           BUILTIN_LP_LOCALUNIFORM_NEG_SAMPLER,
@@ -108,7 +112,8 @@ from .inference import (GSgnnLinkPredictionInferrer,
 from .tracker import get_task_tracker_class
 
 def initialize(ip_config=None, backend='gloo', local_rank=0, use_wholegraph=False):
-    """ Initialize distributed training and inference context.
+    """ Initialize distributed training and inference context. For GraphStorm Standalone mode,
+    no argument is needed. For Distributed mode, users need to provide an IP address list file.
 
     .. code::
 
@@ -120,22 +125,22 @@ def initialize(ip_config=None, backend='gloo', local_rank=0, use_wholegraph=Fals
 
         # distributed mode
         import graphstorm as gs
-        gs.initialize(ip_config="/tmp/ip_list.txt", backend="gloo")
+        gs.initialize(ip_config="/tmp/ip_list.txt")
 
     Parameters
     ----------
     ip_config: str
-        File path of ip_config file, e.g., `/tmp/ip_list.txt`
-        Default: None
+        File path of the IP address file, e.g., `/tmp/ip_list.txt`
+        Default: None.
     backend: str
         Torch distributed backend, e.g., ``gloo`` or ``nccl``.
-        Default: 'gloo'
+        Default: ``gloo``.
     local_rank: int
         The local rank of the current process.
-        Default: 0
+        Default: 0.
     use_wholegraph: bool
         Whether to use wholegraph for feature transfer.
-        Default: False
+        Default: False.
     """
     # We need to use socket for communication in DGL 0.8. The tensorpipe backend has a bug.
     # This problem will be fixed in the future.
@@ -153,19 +158,23 @@ def initialize(ip_config=None, backend='gloo', local_rank=0, use_wholegraph=Fals
     sys_tracker.check(f"setup device on {device}")
 
 def get_node_feat_size(g, node_feat_names):
-    """ Get the feature's size on each node type in the input graph.
+    """ Get the overall feature size of each node type with feature names specified in the
+    ``node_feat_names``. If a node type has multiple features, the returned feature size
+    will be the sum of the sizes of these features for that node type.
 
     Parameters
     ----------
     g : DistGraph
-        The distributed graph.
-    node_feat_names : str or dict of str
-        The node feature names.
+        A DGL distributed graph.
+    node_feat_names : str, or dict of list of str
+        The node feature names. A string indicates that all nodes share the same feature name,
+        while a dictionary with a list of strings indicates that each node type has different node feature names.
 
     Returns
     -------
-    dict of int : the feature size for each node type.
-
+    node_feat_size: dict of int
+        The feature size for the node types and feature names specified in the
+        ``node_feat_names``.
     """
     node_feat_size = {}
     for ntype in g.ntypes:
@@ -205,20 +214,21 @@ def get_node_feat_size(g, node_feat_names):
     return node_feat_size
 
 def get_rel_names_for_reconstruct(g, reconstructed_embed_ntype, feat_size):
-    """ Get the relation types for reconstructing node features.
+    """ Get the edge type list for reconstructing node features.
 
     Parameters
     ----------
     g : DistGraph
-        The input graph.
+        A DGL distributed graph.
     reconstructed_embed_ntype : list of str
-        The node type that requires to reconstruct node features.
+        The node types for which node features need to be reconstructed.
     feat_size : dict of int
-        The feature size on each node type.
+        The feature size on each node type in the format of {"ntype": size}.
 
     Returns
     -------
-    list of tuples : the relation types for reconstructing node features.
+    reconstruct_etypes: list of tuples
+        The edge types whose destination nodes required for reconstructing node features.
     """
     etypes = g.canonical_etypes
     reconstruct_etypes = []
@@ -621,6 +631,22 @@ def create_builtin_lp_decoder(g, decoder_input_dim, config, train_task):
                                                          decoder_input_dim,
                                                          config.gamma,
                                                          config.lp_edge_weight_for_loss)
+    elif config.lp_decoder_type == BUILTIN_LP_ROTATE_DECODER:
+        if get_rank() == 0:
+            logging.debug("Using RotatE objective for supervision")
+        if config.lp_edge_weight_for_loss is None:
+            decoder = LinkPredictContrastiveRotatEDecoder(g.canonical_etypes,
+                                                          decoder_input_dim,
+                                                          config.gamma) \
+                if config.lp_loss_func == BUILTIN_LP_LOSS_CONTRASTIVELOSS else \
+                LinkPredictRotatEDecoder(g.canonical_etypes,
+                                         decoder_input_dim,
+                                         config.gamma)
+        else:
+            decoder = LinkPredictWeightedRotatEDecoder(g.canonical_etypes,
+                                                       decoder_input_dim,
+                                                       config.gamma,
+                                                       config.lp_edge_weight_for_loss)
     else:
         raise Exception(f"Unknow link prediction decoder type {config.lp_decoder_type}")
 

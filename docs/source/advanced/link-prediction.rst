@@ -12,8 +12,8 @@ Optimizing model performance
 ----------------------------
 GraphStorm incorporates three ways of improving model performance of link
 prediction. Firstly, GraphStorm avoids information leak in model training.
-Secondly, to better handle heterogeneous graphs, GraphStorm provides two ways
-to compute link prediction scores: dot product and DistMult.
+Secondly, to better handle heterogeneous graphs, GraphStorm provides three ways
+to compute link prediction scores: dot product, DistMult and RotatE.
 Thirdly, GraphStorm provides two options to compute training losses, i.e.,
 cross entropy loss and contrastive loss. The following sub-sections provide more details.
 
@@ -28,9 +28,11 @@ GraphStorm provides supports to avoid theses problems:
 * To avoid including validation/test edges in message passing during model training, users need to mask validation edges and test edges with ``val_mask`` and ``test_mask`` respectively. Users also need to mask all the other edges with ``train_mask``.
 
 
+.. _link-prediction-score-func:
+
 Computing Link Prediction Scores
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-GraphStorm provides two ways to compute link prediction scores: Dot Product and DistMult.
+GraphStorm provides three ways to compute link prediction scores: Dot Product, DistMult and RotatE.
 
 * **Dot Product**: The Dot Product score function is as:
 
@@ -48,6 +50,24 @@ GraphStorm provides two ways to compute link prediction scores: Dot Product and 
     where the ``head_emb`` is the node embedding of the head node,
     the ``tail_emb`` is the node embedding of the tail node and
     the ``relation_emb`` is the relation embedding of the specific edge type.
+    The relation\_emb values are initialized from a uniform distribution
+    within the range of ``(-gamma/hidden_size, gamma/hidden_size)``,
+    where ``gamma`` and ``hidden_size`` are hyperparameters defined in
+    :ref:`Model Configurations<configurations-model>`。
+
+* **RotatE**: The RotatE score function is as:
+
+    .. math::
+        score = gamma - \|head\_emb \circ relation\_emb - tail\_emb\|^2
+
+    where the ``head_emb`` is the node embedding of the head node,
+    the ``tail_emb`` is the node embedding of the tail node,
+    the ``relation_emb`` is the relation embedding of the specific edge type,
+    and :math:`\circ` is the element-wise product.
+    The relation\_emb values are initialized from a uniform distribution
+    within the range of ``(-gamma/(hidden_size/2), gamma/(hidden_size/2))``,
+    where ``gamma`` and ``hidden_size`` are hyperparameters defined in
+    :ref:`Model Configurations<configurations-model>`。
 
 Link Prediction Loss Functions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -215,7 +235,8 @@ The follwing example shows how to define a hard negative feature for edges with 
                     {
                         "feature_col": "hard_neg",
                         "feature_name": "hard_neg_feat",
-                        "transform": {"name": "edge_dst_hard_negative"},
+                        "transform": {"name": "edge_dst_hard_negative",
+                                                "separator": ";"},
                     }
                 ]
             }
@@ -238,7 +259,7 @@ For example, the file storing hard negatives should look like the following:
     ...
     "src_100"| "dst_41" | [dst0, dst_2]
 
-- **A single string** The ``feature_col`` stores strings instead of string arrays. (When the input format is ``Parquet`` or ``CSV``) In this case, a ``separator`` must be provided int the transformation definition to split the strings into node ids. The ``feature_col`` will be a 1D string list, for example ``["e0_hard_0;e0_hard_1", "e1_hard_1", ..., "en_hard_0;en_hard_1"]``. The string length, i.e., number of hard negatives, can vary from row to row. GraphStorm will automatically handle the case when some edges do not have enough hard negatives.
+- **A single string** The ``feature_col`` stores strings instead of string arrays (When the input format is ``Parquet`` or ``CSV``). In this case, a ``separator`` must be provided int the transformation definition to split the strings into node ids. The ``feature_col`` will be a 1D string list, for example ``["e0_hard_0;e0_hard_1", "e1_hard_1", ..., "en_hard_0;en_hard_1"]``. The string length, i.e., number of hard negatives, can vary from row to row. GraphStorm will automatically handle the case when some edges do not have enough hard negatives.
 For example, the file storing hard negatives should look like the following:
 
 .. code-block:: yaml
