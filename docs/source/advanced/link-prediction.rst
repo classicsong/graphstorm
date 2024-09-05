@@ -70,7 +70,7 @@ GraphStorm provides three ways to compute link prediction scores: Dot Product, D
     :ref:`Model Configurations<configurations-model>`.
     To learn more information about RotatE, please refer to `the DGLKE doc <https://dglke.dgl.ai/doc/kg.html#rotatee>`__.
 
-.. _link-prediction-loss:
+.. _link_prediction_loss:
 
 Link Prediction Loss Functions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -122,8 +122,8 @@ GraphStorm provides four options to compute training losses:
 
     .. math::
         \begin{eqnarray}
-            loss_{neg} = \log (1 - score)
-            loss_{neg} = softmax(score * adversarial_temperature) * loss_{neg}
+            loss_{neg} = \log (1 - score) \\
+            loss_{neg} = softmax(score * adversarial\_temperature) * loss_{neg}
         \end{eqnarray}
 
     where ``score`` is the score value of the negative edges computed by the score function and ``adversarial_temperature`` is a hyper-parameter.
@@ -139,10 +139,10 @@ GraphStorm provides four options to compute training losses:
 
     .. math::
         \begin{eqnarray}
-            loss_{pos} = - w\_e * \log score
+            loss_{pos} = - w * \log score
         \end{eqnarray}
 
-    where ``y`` is 1, ``score`` is the score value of the positive edges computed by the score function. The loss of the negative edges is the same as **Adversarial Cross Entropy Loss**.
+    where ``score`` is the score value of the positive edges computed by the score function, ``w`` is the weight of each positive edge. The loss of the negative edges is the same as **Adversarial Cross Entropy Loss**.
 
     The final loss is as:
 
