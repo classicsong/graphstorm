@@ -70,9 +70,11 @@ GraphStorm provides three ways to compute link prediction scores: Dot Product, D
     :ref:`Model Configurations<configurations-model>`.
     To learn more information about RotatE, please refer to `the DGLKE doc <https://dglke.dgl.ai/doc/kg.html#rotatee>`__.
 
+.. _link_prediction_loss:
+
 Link Prediction Loss Functions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-GraphStorm provides three options to compute training losses:
+GraphStorm provides four options to compute training losses:
 
 * **Cross Entropy Loss**: The cross entropy loss turns a link prediction task into a binary classification task. We treat positive edges as 1 and negative edges as 0. The loss of an edge ``e`` is as:
 
@@ -103,6 +105,28 @@ GraphStorm provides three options to compute training losses:
         \end{eqnarray}
 
     where ``G`` is the training graph.
+
+
+* **Adversarial Cross Entropy Loss**: The adversarial cross entropy loss turns a link prediction task into a binary classification task. We treat positive edges as 1 and negative edges as 0. In addition, adversarial cross-entropy loss adjusts the loss value of each negative sample based on its degree of difficulty. This is enabled by setting the ``--adversarial_temperature`` config.
+
+    The loss of positive edges is as:
+
+    .. math::
+        \begin{eqnarray}
+            loss = - y \cdot \log score + (1 - y) \cdot \log (1 - score)
+        \end{eqnarray}
+
+    where ``y`` is 1, ``score`` is the score value of the positive edges computed by the score function.
+
+    The loss of negative edges is as:
+
+    .. math::
+        \begin{eqnarray}
+            loss = - y \cdot \log score + (1 - y) \cdot \log (1 - score)
+            loss = softmax(score * adversarial_temperature) * loss
+        \end{eqnarray}
+
+    where ``y`` is 0, ``score`` is the score value of the negative edges computed by the score function and ``adversarial_temperature`` is a hyper-parameter.
 
 * **Contrastive Loss**: The contrastive loss compels the representations of connected nodes to be similar while forcing the representations of disconnected nodes remains dissimilar. In the implementation, we use the score computed by the score function to represent the distance between nodes. When computing the loss, we group one positive edge with the ``N`` negative edges corresponding to it.The loss function is as follows:
 
